@@ -1,5 +1,7 @@
 const std = @import("std");
 const c = @import("c.zig");
+const wm = @import("wm_actions.zig");
+const XClient = @import("XClient.zig");
 
 const Self = @This();
 
@@ -12,8 +14,17 @@ key_mappings: []const KeyMap,
 pub const KeyMap = struct {
     key: c.xcb_keysym_t,
     mod: c.xcb_mod_mask_t,
-    action: KeyAction,
-    func: *const fn () anyerror!void,
+    key_action: KeyAction,
+    action: wm.Action,
+};
+
+pub const Args = union {
+    v: void,
+    b: bool,
+    i: i64,
+    u: u64,
+    f: f64,
+    o: struct{t: type, ptr: *anyopaque},
 };
 
 pub const KeyAction = enum {
