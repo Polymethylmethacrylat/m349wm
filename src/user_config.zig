@@ -1,7 +1,7 @@
 const c = @import("c.zig");
 const Config = @import("Config.zig");
-const XClient = @import("XClient.zig");
-const wm = @import("wm_actions.zig");
+const wm = @import("m349wm.zig");
+const wm_actions = @import("wm_actions.zig");
 
 pub const default: Config = .{
     .key_mappings = &[_]Config.KeyMap{
@@ -10,7 +10,7 @@ pub const default: Config = .{
             .mod = c.XCB_MOD_MASK_4,
             .key_action = .release,
             .action = blk: {
-                var exit = wm.Exit{};
+                var exit = wm_actions.Exit{};
                 break :blk exit.action();
             },
         },
@@ -19,7 +19,7 @@ pub const default: Config = .{
             .mod = c.XCB_MOD_MASK_4,
             .key_action = .press,
             .action = blk: {
-                var exit = wm.Move{ .direction = .west };
+                var exit = wm_actions.Move{ .direction = .west };
                 break :blk exit.action();
             },
         },
@@ -28,7 +28,7 @@ pub const default: Config = .{
             .mod = c.XCB_MOD_MASK_4,
             .key_action = .press,
             .action = blk: {
-                var exit = wm.Move{ .direction = .south };
+                var exit = wm_actions.Move{ .direction = .south };
                 break :blk exit.action();
             },
         },
@@ -37,7 +37,7 @@ pub const default: Config = .{
             .mod = c.XCB_MOD_MASK_4,
             .key_action = .press,
             .action = blk: {
-                var exit = wm.Move{ .direction = .north };
+                var exit = wm_actions.Move{ .direction = .north };
                 break :blk exit.action();
             },
         },
@@ -46,7 +46,7 @@ pub const default: Config = .{
             .mod = c.XCB_MOD_MASK_4,
             .key_action = .press,
             .action = blk: {
-                var exit = wm.Move{ .direction = .east };
+                var exit = wm_actions.Move{ .direction = .east };
                 break :blk exit.action();
             },
         },

@@ -1,7 +1,7 @@
 const c = @import("c.zig");
 const std = @import("std");
 const Config = @import("Config.zig");
-const wm = @import("main.zig");
+const wm = @import("m349wm.zig");
 
 pub const Action = struct {
     const Self = @This();
