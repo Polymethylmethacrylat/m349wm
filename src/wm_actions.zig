@@ -1,14 +1,14 @@
 const c = @import("c.zig");
 const std = @import("std");
 const Config = @import("Config.zig");
-const XClient = @import("XClient.zig");
+const wm = @import("main.zig");
 
 pub const Action = struct {
     const Self = @This();
     ptr: *anyopaque,
-    func: *const fn (*anyopaque, *XClient) anyerror!void,
-    pub fn execute(self: Self, client: *XClient) !void {
-        return self.func(self.ptr, client);
+    func: *const fn (*anyopaque) anyerror!void,
+    pub fn execute(self: Self) !void {
+        return self.func(self.ptr);
     }
 };
 
@@ -23,17 +23,17 @@ pub const Move = struct {
         south,
         west,
     };
-    fn execute(ctx: *anyopaque, client: *XClient) !void {
+    fn execute(ctx: *anyopaque) !void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         const direction = self.direction;
 
-        const tree_cookie = c.xcb_query_tree(client.conn, client.screen.root);
-        const tree_reply = c.xcb_query_tree_reply(client.conn, tree_cookie, null);
+        const tree_cookie = c.xcb_query_tree(wm.getConnection(), wm.getScreen().root);
+        const tree_reply = c.xcb_query_tree_reply(wm.getConnection(), tree_cookie, null);
         const tree_children = c.xcb_query_tree_children(tree_reply);
         const window = tree_children[@as(usize, (@intCast(c.xcb_query_tree_children_length(tree_reply)))) - 1];
 
-        const geometry_cookie = c.xcb_get_geometry(client.conn, window);
-        const geometry_reply = c.xcb_get_geometry_reply(client.conn, geometry_cookie, null);
+        const geometry_cookie = c.xcb_get_geometry(wm.getConnection(), window);
+        const geometry_reply = c.xcb_get_geometry_reply(wm.getConnection(), geometry_cookie, null);
 
         const x: i16 = geometry_reply.*.x +% @as(i16, switch (direction) {
             .east => 5,
@@ -54,8 +54,8 @@ pub const Move = struct {
             y,
         };
         std.debug.print("x: {}, y: {}\n", .{value_list[0], value_list[1]});
-        _ = c.xcb_configure_window_checked(client.conn, window, value_mask, &value_list);
-        _ = c.xcb_flush(client.conn);
+        _ = c.xcb_configure_window_checked(wm.getConnection(), window, value_mask, &value_list);
+        _ = c.xcb_flush(wm.getConnection());
     }
     pub fn action(self: *Self) Action {
         return .{ .ptr = self, .func = execute };
@@ -64,9 +64,8 @@ pub const Move = struct {
 
 pub const Exit = struct {
     const Self = @This();
-    fn execute(ctx: *anyopaque, client: *XClient) anyerror!void {
+    fn execute(ctx: *anyopaque) anyerror!void {
         _ = ctx;
-        _ = client;
         return error.Exit;
     }
     pub fn action(self: *Self) Action {
