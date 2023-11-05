@@ -18,15 +18,6 @@ pub const KeyMap = struct {
     action: wm.Action,
 };
 
-pub const Args = union {
-    v: void,
-    b: bool,
-    i: i64,
-    u: u64,
-    f: f64,
-    o: struct{t: type, ptr: *anyopaque},
-};
-
 pub const KeyAction = enum {
     press,
     release,

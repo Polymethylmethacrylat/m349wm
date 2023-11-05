@@ -67,13 +67,14 @@ pub fn eventLoop(self: *Self) !void {
         if (self.event_handlers[ev.*.response_type & ~@as(u8, 0x80)]) |ev_handl| {
             log.debug("handling event: {}", .{ev.*.response_type});
             ev_handl(self, ev) catch |err| {
-                if (err == error.Exit)
-                    return
-                else
+                if (err == error.Exit) {
+                    return;
+                } else {
                     return err;
+                }
             };
         } else {
-            log.warn("encountered unhandled event: {}", .{ev.*.response_type});
+            log.info("encountered unhandled event: {}", .{ev.*.response_type});
         }
     } else {
         // might expand errorhandling in the future
