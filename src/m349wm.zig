@@ -1,12 +1,11 @@
 const std = @import("std");
-const log = std.log.scoped(.m349wm);
 const Allocator = std.mem.Allocator;
 const AutoHashMapUnmanaged = std.AutoHashMapUnmanaged;
+const log = std.log.scoped(.m349wm);
 
 const c = @import("c.zig");
-const Config = @import("Config.zig");
 const presets = @import("presets.zig");
-const wm = @import("wm_actions.zig");
+const wm = @import("wm.zig");
 
 const EventHandler = *const fn (ev: *c.xcb_generic_event_t) anyerror!void;
 const KeyHandlersT = AutoHashMapUnmanaged(
@@ -16,7 +15,7 @@ const KeyHandlersT = AutoHashMapUnmanaged(
 const KeyEvent = struct {
     keycode: c.xcb_keycode_t,
     state: u16,
-    action: Config.KeyAction,
+    action: wm.KeyAction,
 };
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -50,7 +49,7 @@ fn handleKeyEvent(ev: *c.xcb_generic_event_t) !void {
     const e: *c.xcb_key_press_event_t = @ptrCast(ev);
     const keycode = e.detail;
     const state = e.state & ~@as(u16, 0xff00);
-    const action: Config.KeyAction = if (e.response_type == c.XCB_KEY_PRESS) .press else .release;
+    const action: wm.KeyAction = if (e.response_type == c.XCB_KEY_PRESS) .press else .release;
 
     if (key_handlers.get(.{ .keycode = keycode, .state = state, .action = action })) |act| {
         try act.execute();
@@ -66,11 +65,11 @@ fn handleMapRequest(ev: *c.xcb_generic_event_t) !void {
     _ = c.xcb_flush(conn);
 }
 
-pub fn eventLoop() !void {
-    while (c.xcb_wait_for_event(conn)) |ev| {
+fn eventLoop() !void {
+    while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(conn))) |ev| {
         defer c.free(ev);
-        if (event_handlers[ev.*.response_type & ~@as(u8, 0x80)]) |ev_handl| {
-            log.debug("handling event: {}", .{ev.*.response_type});
+        if (event_handlers[ev.response_type & ~@as(u8, 0x80)]) |ev_handl| {
+            log.debug("handling event: {}", .{ev.response_type});
             ev_handl(ev) catch |err| {
                 if (err == error.Exit) {
                     return;
@@ -79,7 +78,7 @@ pub fn eventLoop() !void {
                 }
             };
         } else {
-            log.info("encountered unhandled event: {}", .{ev.*.response_type});
+            log.info("encountered unhandled event: {}", .{ev.response_type});
         }
     } else {
         // might expand errorhandling in the future

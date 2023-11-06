@@ -1,16 +1,9 @@
-const c = @import("c.zig");
+const c = @import("../c.zig");
 const std = @import("std");
 const Config = @import("Config.zig");
-const wm = @import("m349wm.zig");
-
-pub const Action = struct {
-    const Self = @This();
-    ptr: *anyopaque,
-    func: *const fn (*anyopaque) anyerror!void,
-    pub fn execute(self: Self) !void {
-        return self.func(self.ptr);
-    }
-};
+const root = @import("root");
+const wm = @import("../wm.zig");
+const Action = wm.Action;
 
 pub const Move = struct {
     const Self = @This();
@@ -27,13 +20,13 @@ pub const Move = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
         const direction = self.direction;
 
-        const tree_cookie = c.xcb_query_tree(wm.getConnection(), wm.getScreen().root);
-        const tree_reply = c.xcb_query_tree_reply(wm.getConnection(), tree_cookie, null);
+        const tree_cookie = c.xcb_query_tree(root.getConnection(), root.getScreen().root);
+        const tree_reply = c.xcb_query_tree_reply(root.getConnection(), tree_cookie, null);
         const tree_children = c.xcb_query_tree_children(tree_reply);
         const window = tree_children[@as(usize, (@intCast(c.xcb_query_tree_children_length(tree_reply)))) - 1];
 
-        const geometry_cookie = c.xcb_get_geometry(wm.getConnection(), window);
-        const geometry_reply = c.xcb_get_geometry_reply(wm.getConnection(), geometry_cookie, null);
+        const geometry_cookie = c.xcb_get_geometry(root.getConnection(), window);
+        const geometry_reply = c.xcb_get_geometry_reply(root.getConnection(), geometry_cookie, null);
 
         const x: i16 = geometry_reply.*.x +% @as(i16, switch (direction) {
             .east => 5,
@@ -54,8 +47,8 @@ pub const Move = struct {
             y,
         };
         std.debug.print("x: {}, y: {}\n", .{value_list[0], value_list[1]});
-        _ = c.xcb_configure_window_checked(wm.getConnection(), window, value_mask, &value_list);
-        _ = c.xcb_flush(wm.getConnection());
+        _ = c.xcb_configure_window_checked(root.getConnection(), window, value_mask, &value_list);
+        _ = c.xcb_flush(root.getConnection());
     }
     pub fn action(self: *Self) Action {
         return .{ .ptr = self, .func = execute };
