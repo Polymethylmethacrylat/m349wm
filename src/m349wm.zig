@@ -5,7 +5,7 @@ const AutoHashMapUnmanaged = std.AutoHashMapUnmanaged;
 
 const c = @import("c.zig");
 const Config = @import("Config.zig");
-const presets = @import("user_config.zig");
+const presets = @import("presets.zig");
 const wm = @import("wm_actions.zig");
 
 const EventHandler = *const fn (ev: *c.xcb_generic_event_t) anyerror!void;
