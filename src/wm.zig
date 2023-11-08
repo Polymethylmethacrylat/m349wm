@@ -13,6 +13,25 @@ pub const Action = struct {
     }
 };
 
+pub const Client = struct {
+    const Self = @This();
+
+    parent: c.xcb_window_t,
+    window: c.xcb_window_t,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    border_width: u16,
+    override_redirect: bool,
+    mapped: bool,
+};
+
+pub const KeyAction = enum {
+    press,
+    release,
+};
+
 pub const KeyMap = struct {
     key: c.xcb_keysym_t,
     mod: c.xcb_mod_mask_t,
@@ -20,7 +39,3 @@ pub const KeyMap = struct {
     action: Action,
 };
 
-pub const KeyAction = enum {
-    press,
-    release,
-};

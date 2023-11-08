@@ -1,14 +1,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const AutoHashMapUnmanaged = std.AutoHashMapUnmanaged;
+const ArrayList = std.ArrayList;
+const UHashMap = std.AutoHashMapUnmanaged;
 const log = std.log.scoped(.m349wm);
 
 const c = @import("c.zig");
 const presets = @import("presets.zig");
 const wm = @import("wm.zig");
+const Client = wm.Client;
 
 const EventHandler = *const fn (ev: *c.xcb_generic_event_t) anyerror!void;
-const KeyHandlersT = AutoHashMapUnmanaged(
+const KeyHandlersT = UHashMap(
     KeyEvent,
     wm.Action,
 );
@@ -27,10 +29,16 @@ const event_handlers: [128]?EventHandler = blk: {
     ev_hndls[0] = handleError;
     ev_hndls[c.XCB_KEY_PRESS] = handleKeyEvent;
     ev_hndls[c.XCB_KEY_RELEASE] = handleKeyEvent;
+    ev_hndls[c.XCB_CREATE_NOTIFY] = handleCreateNotify;
+    ev_hndls[c.XCB_DESTROY_NOTIFY] = handleDestroyNotify;
+    ev_hndls[c.XCB_UNMAP_NOTIFY] = handleUnmapNotify;
+    ev_hndls[c.XCB_MAP_NOTIFY] = handleMapNotify;
     ev_hndls[c.XCB_MAP_REQUEST] = handleMapRequest;
+    ev_hndls[c.XCB_REPARENT_NOTIFY] = handleReparentNotify;
     break :blk ev_hndls;
 };
 var key_handlers: KeyHandlersT = undefined;
+var clients: ArrayList(Client) = undefined;
 
 pub fn getConnection() *c.xcb_connection_t {
     return conn;
@@ -58,11 +66,114 @@ fn handleKeyEvent(ev: *c.xcb_generic_event_t) !void {
     }
 }
 
+fn handleCreateNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_create_notify_event_t = @ptrCast(ev);
+    const client: Client = .{
+        .parent = e.parent,
+        .window = e.window,
+        .x = e.x,
+        .y = e.y,
+        .width = e.width,
+        .height = e.height,
+        .border_width = e.border_width,
+        .override_redirect = e.override_redirect != 0,
+        .mapped = false,
+    };
+    log.debug("a new client has been created: {}", .{client});
+
+    try clients.append(client);
+}
+
+fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
+
+    for (clients.items, 0..) |client, i| {
+        if (client.window != e.window)
+            continue;
+
+        const destroyed_client = clients.swapRemove(i);
+        log.debug("a client got destroyed: {}", .{destroyed_client});
+    } else {
+        log.warn("an unknown client got destroyed: {}", .{e});
+    }
+}
+
 fn handleMapRequest(ev: *c.xcb_generic_event_t) !void {
     const window: c.xcb_window_t = @as(*c.xcb_map_request_event_t, @ptrCast(ev)).window;
-
-    _ = c.xcb_map_window_checked(conn, window);
+    _ = c.xcb_map_window(conn, window);
     _ = c.xcb_flush(conn);
+    // triggers a MapNotify(hopefully)
+}
+
+fn handleMapNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
+    for (clients.items) |*client| {
+        if (client.window != e.window)
+            continue;
+        client.mapped = true;
+        break;
+    }
+}
+
+fn handleUnmapNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
+    for (clients.items) |*client| {
+        if (client.window != e.window)
+            continue;
+        client.mapped = false;
+        break;
+    }
+}
+
+fn handleReparentNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_reparent_notify_event_t = @ptrCast(ev);
+    const translate_cookie = c.xcb_translate_coordinates(conn, e.parent, screen.root, e.x, e.y);
+    for (clients.items) |*client| {
+        if (client.window != e.window)
+            continue;
+
+        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
+        client.parent = e.parent;
+        // only single monitor setups rn
+        client.x = translate_repl.*.dst_x;
+        client.y = translate_repl.*.dst_y;
+        break;
+    }
+}
+
+fn handleConfigureNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_configure_notify_event_t = @ptrCast(ev);
+    for (clients.items) |*client| {
+        if (client.window != e.window)
+            continue;
+
+        const translate_cookie = c.xcb_translate_coordinates(conn, client.parent, screen.root, e.x, e.y);
+        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
+        // only single monitor setups rn
+        client.x = translate_repl.*.dst_x;
+        client.y = translate_repl.*.dst_y;
+        client.width = e.width;
+        client.height = e.height;
+        client.border_width = e.border_width;
+        client.override_redirect = e.override_redirect != 0;
+        break;
+    }
+}
+
+fn handleGravityNotify(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_gravity_notify_event_t = @ptrCast(ev);
+
+    for (clients.items) |*client| {
+        if (clients.window != e.window)
+            continue;
+
+        const translate_cookie = c.xcb_translate_coordinates(conn, client.parent, screen.root, e.x, e.y);
+        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
+        // only single monitor setups rn
+        client.x = translate_repl.*.dst_x;
+        client.y = translate_repl.*.dst_y;
+        break;
+    }
 }
 
 fn eventLoop() !void {
@@ -179,6 +290,8 @@ pub fn main() !void {
     // sets screen
     screen = @ptrCast(c.xcb_setup_roots_iterator(c.xcb_get_setup(conn)).data);
 
+    log.debug("connection succesfull: {}", .{.screen = screen});
+
     // Request wm-permissions
     {
         const values = comptime blk: {
@@ -198,6 +311,36 @@ pub fn main() !void {
 
     try setupKeys();
     defer key_handlers.deinit(allocator);
+
+    clients = try ArrayList(Client).initCapacity(allocator, 64);
+    defer clients.deinit();
+
+    // gather already existing clients
+    {
+        const tree_cookie = c.xcb_query_tree(conn, screen.root);
+        const tree_repl = c.xcb_query_tree_reply(conn, tree_cookie, null);
+        const children_length: usize = @intCast(c.xcb_query_tree_children_length(tree_repl));
+        const children = c.xcb_query_tree_children(tree_repl)[0..children_length];
+
+        for (children) |child| {
+            const geometry_cookie = c.xcb_get_geometry(conn, child);
+            const attributes_cookie = c.xcb_get_window_attributes(conn, child);
+            const geometry_repl = c.xcb_get_geometry_reply(conn, geometry_cookie, null);
+            const attributes_repl = c.xcb_get_window_attributes_reply(conn, attributes_cookie, null);
+            var client: Client = .{
+                .parent = screen.root,
+                .window = child,
+                .x = geometry_repl.*.x,
+                .y = geometry_repl.*.y,
+                .width = geometry_repl.*.width,
+                .height = geometry_repl.*.height,
+                .border_width = geometry_repl.*.height,
+                .override_redirect = attributes_repl.*.override_redirect != 0,
+                .mapped = attributes_repl.*.map_state != c.XCB_MAP_STATE_UNMAPPED,
+            };
+            try clients.append(client);
+        }
+    }
 
     try eventLoop();
 }
