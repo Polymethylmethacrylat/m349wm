@@ -37,6 +37,7 @@ const event_handlers: [128]?EventHandler = blk: {
     ev_hndls[c.XCB_REPARENT_NOTIFY] = handleReparentNotify;
     ev_hndls[c.XCB_CONFIGURE_NOTIFY] = handleConfigureNotify;
     ev_hndls[c.XCB_GRAVITY_NOTIFY] = handleGravityNotify;
+    ev_hndls[c.XCB_CONFIGURE_REQUEST] = handleConfigureRequest;
     break :blk ev_hndls;
 };
 var key_handlers: KeyHandlersT = undefined;
@@ -166,7 +167,7 @@ fn handleGravityNotify(ev: *c.xcb_generic_event_t) !void {
     const e: *c.xcb_gravity_notify_event_t = @ptrCast(ev);
 
     for (clients.items) |*client| {
-        if (clients.window != e.window)
+        if (client.window != e.window)
             continue;
 
         const translate_cookie = c.xcb_translate_coordinates(conn, client.parent, screen.root, e.x, e.y);
@@ -174,6 +175,41 @@ fn handleGravityNotify(ev: *c.xcb_generic_event_t) !void {
         // only single monitor setups rn
         client.x = translate_repl.*.dst_x;
         client.y = translate_repl.*.dst_y;
+        break;
+    }
+}
+
+fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_configure_request_event_t = @ptrCast(ev);
+    const value_mask: u16 = 
+        c.XCB_CONFIG_WINDOW_X |
+        c.XCB_CONFIG_WINDOW_Y |
+        c.XCB_CONFIG_WINDOW_WIDTH |
+        c.XCB_CONFIG_WINDOW_HEIGHT |
+        c.XCB_CONFIG_WINDOW_BORDER_WIDTH |
+        c.XCB_CONFIG_WINDOW_SIBLING |
+        c.XCB_CONFIG_WINDOW_STACK_MODE;
+    const value_list = [_]u32{
+        @as(u16, @bitCast(e.x)),
+        @as(u16, @bitCast(e.y)),
+        e.width,
+        e.height,
+        e.border_width,
+        e.sibling,
+        e.stack_mode,
+    };
+
+    _ = c.xcb_configure_window(conn, e.window, value_mask, &value_list);
+
+    for (clients.items) |*client| {
+        if (client.window != e.window)
+            continue;
+
+        client.x = e.x;
+        client.y = e.y;
+        client.width = e.width;
+        client.height = e.height;
+        client.border_width = e.border_width;
         break;
     }
 }
