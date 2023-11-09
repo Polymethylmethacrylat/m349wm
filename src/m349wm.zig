@@ -35,6 +35,8 @@ const event_handlers: [128]?EventHandler = blk: {
     ev_hndls[c.XCB_MAP_NOTIFY] = handleMapNotify;
     ev_hndls[c.XCB_MAP_REQUEST] = handleMapRequest;
     ev_hndls[c.XCB_REPARENT_NOTIFY] = handleReparentNotify;
+    ev_hndls[c.XCB_CONFIGURE_NOTIFY] = handleConfigureNotify;
+    ev_hndls[c.XCB_GRAVITY_NOTIFY] = handleGravityNotify;
     break :blk ev_hndls;
 };
 var key_handlers: KeyHandlersT = undefined;
