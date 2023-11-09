@@ -17,7 +17,7 @@ const KeyHandlersT = UHashMap(
 const KeyEvent = struct {
     keycode: c.xcb_keycode_t,
     state: u16,
-    action: wm.KeyAction,
+    key_state: wm.KeyState,
 };
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -41,6 +41,8 @@ const event_handlers: [128]?EventHandler = blk: {
     ev_hndls[c.XCB_CIRCULATE_REQUEST] = handleCirculateRequest;
     break :blk ev_hndls;
 };
+var key_states: [256]wm.KeyState = .{.released} ** 256;
+var mod_state: u16 = 0;
 var key_handlers: KeyHandlersT = undefined;
 var clients: ArrayList(Client) = undefined;
 
@@ -49,6 +51,14 @@ pub fn getConnection() *c.xcb_connection_t {
 }
 pub fn getScreen() *c.xcb_screen_t {
     return screen;
+}
+
+pub fn getKeyStates() *const [256]wm.KeyState {
+    return &key_states;
+}
+
+pub fn getModState() u16 {
+    return mod_state;
 }
 
 fn handleError(ev: *c.xcb_generic_event_t) !void {
@@ -60,13 +70,26 @@ fn handleError(ev: *c.xcb_generic_event_t) !void {
 fn handleKeyEvent(ev: *c.xcb_generic_event_t) !void {
     const e: *c.xcb_key_press_event_t = @ptrCast(ev);
     const keycode = e.detail;
-    const state = e.state & ~@as(u16, 0xff00);
-    const action: wm.KeyAction = if (e.response_type == c.XCB_KEY_PRESS) .press else .release;
+    mod_state = e.state & ~@as(u16, 0xff00);
 
-    if (key_handlers.get(.{ .keycode = keycode, .state = state, .action = action })) |act| {
-        try act.execute();
-    } else {
-        log.debug("encountered unhandled key binding: {}", .{.{ .keycode = keycode, .state = state, .action = action }});
+    for (&key_states, 0..) |*key_state, i| {
+        if (i == keycode) {
+            key_state.* = if (e.response_type == c.XCB_KEY_PRESS) .pressing else .releasing;
+
+            if (key_handlers.get(.{ .keycode = @truncate(i), .state = mod_state, .key_state = key_state.* })) |act| {
+                try act.execute();
+            }
+        }
+
+        switch (key_state.*) {
+            .pressing => key_state.* = .pressed,
+            .releasing => key_state.* = .released,
+            else => {},
+        }
+
+        if (key_handlers.get(.{ .keycode = @truncate(i), .state = mod_state, .key_state = key_state.* })) |act| {
+            try act.execute();
+        }
     }
 }
 
@@ -97,6 +120,7 @@ fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
 
         const destroyed_client = clients.swapRemove(i);
         log.debug("a client got destroyed: {}", .{destroyed_client});
+        break;
     } else {
         log.warn("an unknown client got destroyed: {}", .{e});
     }
@@ -247,6 +271,7 @@ fn eventLoop() !void {
         return error.ConnectionError;
     }
 }
+
 fn setupKeys() !void {
     key_handlers = KeyHandlersT{};
     errdefer key_handlers.deinit(allocator);
@@ -294,30 +319,30 @@ fn setupKeys() !void {
     for (presets.default.key_mappings) |key_map| {
         const key_code: c.xcb_keycode_t = c.xcb_key_symbols_get_keycode(keysyms, key_map.key).*;
         const key_mod: c.xcb_mod_mask_t = key_map.mod;
-        const action = key_map.key_action;
+        const action = key_map.key_state;
         const func = key_map.action;
 
         _ = c.xcb_grab_key(conn, 1, screen.root, @truncate(key_mod), key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-        key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = @truncate(key_mod), .action = action }, func);
+        key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = @truncate(key_mod), .key_state = action }, func);
 
         if (!presets.default.num_lock_explicit) {
             var mod: u16 = @truncate(key_mod ^ numloc_mod);
             _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .action = action }, func);
+            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
 
             if (presets.default.caps_eqls_shift) {
                 mod ^= @truncate(@as(c_uint, @intCast(c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK)));
                 _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .action = action }, func);
+                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
 
                 mod = @truncate(key_mod ^ (c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK));
                 _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .action = action }, func);
+                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
             }
         } else if (presets.default.caps_eqls_shift) {
             const mod: u16 = @truncate(key_mod ^ (c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK));
             _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .action = action }, func);
+            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
         }
     }
     _ = c.xcb_flush(conn);

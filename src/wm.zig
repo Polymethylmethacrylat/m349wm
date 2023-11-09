@@ -27,15 +27,17 @@ pub const Client = struct {
     mapped: bool,
 };
 
-pub const KeyAction = enum {
-    press,
-    release,
+pub const KeyState = enum {
+    released,
+    pressed,
+    releasing,
+    pressing,
 };
 
 pub const KeyMap = struct {
     key: c.xcb_keysym_t,
     mod: c.xcb_mod_mask_t,
-    key_action: KeyAction,
+    key_state: KeyState,
     action: Action,
 };
 
