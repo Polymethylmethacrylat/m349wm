@@ -49,6 +49,9 @@ var clients: ArrayList(Client) = undefined;
 pub fn getConnection() *c.xcb_connection_t {
     return conn;
 }
+pub fn getClients() []Client {
+    return clients.items;
+}
 pub fn getScreen() *c.xcb_screen_t {
     return screen;
 }
@@ -128,9 +131,15 @@ fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
 
 fn handleMapRequest(ev: *c.xcb_generic_event_t) !void {
     const window: c.xcb_window_t = @as(*c.xcb_map_request_event_t, @ptrCast(ev)).window;
-    _ = c.xcb_map_window(conn, window);
+    _ = c.xcb_map_window_checked(conn, window);
     _ = c.xcb_flush(conn);
-    // triggers a MapNotify(hopefully)
+
+    for (clients.items) |*client| {
+        if (client.window != window)
+            continue;
+        client.mapped = true;
+        break;
+    }
 }
 
 fn handleMapNotify(ev: *c.xcb_generic_event_t) !void {
@@ -214,6 +223,7 @@ fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
         c.XCB_CONFIG_WINDOW_BORDER_WIDTH |
         c.XCB_CONFIG_WINDOW_SIBLING |
         c.XCB_CONFIG_WINDOW_STACK_MODE;
+
     const value_list = [_]u32{
         @as(u16, @bitCast(e.x)),
         @as(u16, @bitCast(e.y)),
@@ -224,7 +234,8 @@ fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
         e.stack_mode,
     };
 
-    _ = c.xcb_configure_window(conn, e.window, value_mask, &value_list);
+    _ = c.xcb_configure_window_checked(conn, e.window, value_mask, &value_list);
+    _ = c.xcb_flush(conn);
 
     for (clients.items) |*client| {
         if (client.window != e.window)
@@ -241,7 +252,7 @@ fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
 
 fn handleCirculateRequest(ev: *c.xcb_generic_event_t) !void {
     const e: *c.xcb_circulate_request_event_t = @ptrCast(ev);
-    _ = c.xcb_circulate_window(
+    _ = c.xcb_circulate_window_checked(
         conn,
         if (e.place == c.XCB_PLACE_ON_TOP)
             c.XCB_CIRCULATE_RAISE_LOWEST
@@ -249,6 +260,7 @@ fn handleCirculateRequest(ev: *c.xcb_generic_event_t) !void {
             c.XCB_CIRCULATE_LOWER_HIGHEST,
         e.window,
     );
+    _ = c.xcb_flush(conn);
 }
 
 fn eventLoop() !void {
