@@ -38,6 +38,7 @@ const event_handlers: [128]?EventHandler = blk: {
     ev_hndls[c.XCB_CONFIGURE_NOTIFY] = handleConfigureNotify;
     ev_hndls[c.XCB_GRAVITY_NOTIFY] = handleGravityNotify;
     ev_hndls[c.XCB_CONFIGURE_REQUEST] = handleConfigureRequest;
+    ev_hndls[c.XCB_CIRCULATE_REQUEST] = handleCirculateRequest;
     break :blk ev_hndls;
 };
 var key_handlers: KeyHandlersT = undefined;
@@ -181,7 +182,7 @@ fn handleGravityNotify(ev: *c.xcb_generic_event_t) !void {
 
 fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
     const e: *c.xcb_configure_request_event_t = @ptrCast(ev);
-    const value_mask: u16 = 
+    const value_mask: u16 =
         c.XCB_CONFIG_WINDOW_X |
         c.XCB_CONFIG_WINDOW_Y |
         c.XCB_CONFIG_WINDOW_WIDTH |
@@ -214,6 +215,18 @@ fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
     }
 }
 
+fn handleCirculateRequest(ev: *c.xcb_generic_event_t) !void {
+    const e: *c.xcb_circulate_request_event_t = @ptrCast(ev);
+    _ = c.xcb_circulate_window(
+        conn,
+        if (e.place == c.XCB_PLACE_ON_TOP)
+            c.XCB_CIRCULATE_RAISE_LOWEST
+        else
+            c.XCB_CIRCULATE_LOWER_HIGHEST,
+        e.window,
+    );
+}
+
 fn eventLoop() !void {
     while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(conn))) |ev| {
         defer c.free(ev);
@@ -234,7 +247,6 @@ fn eventLoop() !void {
         return error.ConnectionError;
     }
 }
-
 fn setupKeys() !void {
     key_handlers = KeyHandlersT{};
     errdefer key_handlers.deinit(allocator);
@@ -328,7 +340,7 @@ pub fn main() !void {
     // sets screen
     screen = @ptrCast(c.xcb_setup_roots_iterator(c.xcb_get_setup(conn)).data);
 
-    log.debug("connection succesfull: {}", .{.screen = screen});
+    log.debug("connection succesfull: {}", .{ .screen = screen });
 
     // Request wm-permissions
     {
