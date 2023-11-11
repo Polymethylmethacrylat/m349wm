@@ -45,12 +45,16 @@ var key_states: [256]wm.KeyState = .{.released} ** 256;
 var mod_state: u16 = 0;
 var key_handlers: KeyHandlersT = undefined;
 var clients: ArrayList(Client) = undefined;
+var current_client: ?usize = null;
 
 pub fn getConnection() *c.xcb_connection_t {
     return conn;
 }
 pub fn getClients() []Client {
     return clients.items;
+}
+pub fn getCurrentClient() ?*Client {
+    return if (current_client) |i| &clients.items[i] else null;
 }
 pub fn getScreen() *c.xcb_screen_t {
     return screen;
@@ -112,6 +116,7 @@ fn handleCreateNotify(ev: *c.xcb_generic_event_t) !void {
     log.debug("a new client has been created: {}", .{client});
 
     try clients.append(client);
+    current_client = clients.items.len;
 }
 
 fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
@@ -120,6 +125,14 @@ fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
     for (clients.items, 0..) |client, i| {
         if (client.window != e.window)
             continue;
+
+        if (current_client) |*j| {
+            if (i == j.*) {
+                current_client = null;
+            } else if (j.* == clients.items.len - 1) {
+                j.* = i;
+            }
+        }
 
         const destroyed_client = clients.swapRemove(i);
         log.debug("a client got destroyed: {}", .{destroyed_client});
