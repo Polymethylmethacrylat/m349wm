@@ -6,8 +6,8 @@ pub const Config = @import("wm/Config.zig");
 
 pub const Action = struct {
     const Self = @This();
-    ptr: *anyopaque,
-    func: *const fn (*anyopaque) anyerror!void,
+    ptr: *const anyopaque,
+    func: *const fn (*const anyopaque) anyerror!void,
     pub fn execute(self: Self) !void {
         return self.func(self.ptr);
     }

@@ -56,6 +56,12 @@ pub fn getClients() []Client {
 pub fn getCurrentClient() ?*Client {
     return if (current_client) |i| &clients.items[i] else null;
 }
+pub fn setCurrentClient(suggestion: Client) !void {
+    for (clients.items) |client| {
+        if (client.window == suggestion.window)
+            return;
+    } else return error.NotFound;
+}
 pub fn getScreen() *c.xcb_screen_t {
     return screen;
 }
@@ -116,7 +122,7 @@ fn handleCreateNotify(ev: *c.xcb_generic_event_t) !void {
     log.debug("a new client has been created: {}", .{client});
 
     try clients.append(client);
-    current_client = clients.items.len;
+    current_client = clients.items.len - 1;
 }
 
 fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
