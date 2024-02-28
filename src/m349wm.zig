@@ -3,30 +3,67 @@ const log = std.log.scoped(.m349wm);
 const assert = std.debug.assert;
 const free = std.c.free;
 
+const builtin = @import("builtin");
+
 const c = @import("c.zig");
 const XcbConnection = c.xcb_connection_t;
 const XcbGenericEvent = c.xcb_generic_event_t;
 
-const EventHandler = *const fn (
-    con: *XcbConnection,
-    ev: *const XcbGenericEvent,
-) EventHandlerError!void;
-const EventHandlerError = error{};
-
-const event_handlers: [128]?EventHandler = blk: {
-    var ev_handl: [128]?EventHandler = .{null} ** 128;
-    break :blk ev_handl;
-};
+fn handleCreateNotify() void {}
+fn handleDestroyNotify() void {}
+fn handleUnmapNotify() void {}
+fn handleMapNotify() void {}
+fn handleMapRequest(con: *XcbConnection, ev: *const XcbGenericEvent) !void {
+    const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
+    log.debug(
+        \\handling map request. window: {}, parent: {}
+    , .{ event.window, event.parent });
+    //const value_mask = c.XCB_CONFIG_WINDOW_BORDER_WIDTH;
+    //const value_list: c.xcb_configure_window_value_list_t = blk: {
+    //    var val: c.xcb_configure_window_value_list_t = undefined;
+    //    val.border_width = 10;
+    //    break :blk undefined;
+    //};
+    //const configure_cookie = c.xcb_configure_window_aux(con, event.window, value_mask, &value_list);
+    //log.debug(
+    //    \\configuring window `{}`. sequence id: `{x}`
+    //, .{ event.window, configure_cookie.sequence });
+    const map_cookie = c.xcb_map_window(con, event.window);
+    log.debug(
+        \\mapping window `{}`. sequence id: `{x}`
+    , .{ event.window, map_cookie.sequence });
+    assert(c.xcb_flush(con) > 0);
+}
+fn handleReparentNotify() void {}
+fn handleConfigureNotify() void {}
+fn handleResizeRequest() void {}
+fn handleConfigureRequest(con: *XcbConnection, ev: *const XcbGenericEvent) !void {
+    _ = con;
+    const event: *const c.xcb_configure_window_request_t = @ptrCast(ev);
+    log.debug(
+        \\ignoring configure window request. window: {}, value_mask: {}
+    , .{ event.window, event.value_mask });
+}
+fn handleCirculateNotify() void {}
+fn hanldeCirculateRequest() void {}
+fn handlePropertyNotify() void {}
+fn handleMappingNotify() void {}
+fn hanldeClientMessage() void {}
 
 fn eventLoop(con: *XcbConnection) !void {
-    while (@as(?*XcbGenericEvent, c.xcb_wait_for_event(con))) |generic_event| {
-        defer free(generic_event);
-        if (event_handlers[generic_event.response_type & 0x7f]) |ev_handl|
-            try ev_handl(con, generic_event)
-        else {
-            log.warn(
-                \\received unknown x event of type `{}`
-            , .{generic_event.response_type});
+    while (@as(?*XcbGenericEvent, c.xcb_wait_for_event(con))) |event| {
+        defer free(event);
+        switch (event.sequence) {
+            c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
+            c.XCB_CONFIGURE_REQUEST => try handleConfigureRequest(con, event),
+            else => {
+                log.warn(
+                    \\received unknown x event of type `{}` while or after request `{x}`
+                , .{
+                    event.response_type,
+                    event.sequence,
+                });
+            },
         }
     } else return error.XcbConnError;
 }
@@ -94,15 +131,18 @@ pub fn main() !void {
             break :blk vl;
         };
 
-        log.debug(
-            \\trying to register for desired events of root window `{}`
-        , .{screen.root});
         const wm_root_ev_req_cookie = c.xcb_change_window_attributes_aux_checked(
             con,
             screen.root,
             value_mask,
             &value_list,
         );
+        log.debug(
+            \\trying to register for desired events of root window `{}`, sequence number: `{x}`
+        , .{
+            screen.root,
+            wm_root_ev_req_cookie.sequence,
+        });
         assert(c.xcb_flush(con) > 0);
         const err = c.xcb_request_check(con, wm_root_ev_req_cookie) orelse break :root_ev;
         defer free(err);
