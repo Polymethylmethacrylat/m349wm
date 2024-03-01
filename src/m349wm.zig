@@ -53,7 +53,7 @@ fn hanldeClientMessage() void {}
 fn eventLoop(con: *XcbConnection) !void {
     while (@as(?*XcbGenericEvent, c.xcb_wait_for_event(con))) |event| {
         defer free(event);
-        switch (event.sequence) {
+        switch (event.response_type) {
             c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
             c.XCB_CONFIGURE_REQUEST => try handleConfigureRequest(con, event),
             else => {
