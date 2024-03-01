@@ -111,14 +111,7 @@ pub fn main() !void {
         \\connected successfully. Desired screen is: {}
     , .{screenp});
 
-    const screen: c.xcb_screen_t = blk: {
-        // gets desired screen
-        const setup = c.xcb_get_setup(con);
-        assert(c.xcb_setup_roots_length(setup) > screenp);
-        var roots_iter = c.xcb_setup_roots_iterator(setup);
-        for (0..@intCast(screenp)) |_| c.xcb_screen_next(&roots_iter);
-        break :blk roots_iter.data.*;
-    };
+    const screen: *c.xcb_screen_t = c.xcb_aux_get_screen(con, screenp);
 
     root_ev: {
         const value_mask = c.XCB_CW_EVENT_MASK;

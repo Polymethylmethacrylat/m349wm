@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkSystemLibrary("xcb");
     exe.linkSystemLibrary("xcb-keysyms");
+    exe.linkSystemLibrary("xcb-util");
 
     b.installArtifact(exe);
 
