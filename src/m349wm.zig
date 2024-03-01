@@ -1,61 +1,122 @@
 const std = @import("std");
 const log = std.log.scoped(.m349wm);
+const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const free = std.c.free;
 
 const builtin = @import("builtin");
 
 const c = @import("c.zig");
-const XcbConnection = c.xcb_connection_t;
-const XcbGenericEvent = c.xcb_generic_event_t;
+
+const Client = struct {
+    const Self = @This();
+    connection: *c.xcb_connection_t,
+    window: c.xcb_window_t,
+    pub fn getAttributes(self: *const Self) ?*c.xcb_get_window_attributes_reply_t {
+        const cookie = c.xcb_get_window_attributes(
+            self.connection,
+            self.window,
+        );
+        log.debug(
+            \\getting attributes of window `{}`. sequence number: {x}
+        , .{ self.window, cookie.sequence });
+        const reply = c.xcb_get_window_attributes_reply(
+            self.connection,
+            cookie,
+            null,
+        );
+        return reply;
+    }
+    pub fn getGeometry(self: *const Self) ?*c.xcb_get_geometry_reply_t {
+        const cookie = c.xcb_get_geometry(
+            self.connection,
+            self.window,
+        );
+        log.debug(
+            \\getting geometry of window `{}`. sequence number: {x}
+        , .{ self.window, cookie.sequence });
+        const reply = c.xcb_get_geometry_reply(
+            self.connection,
+            cookie,
+            null,
+        );
+        return reply;
+    }
+    pub fn listProperties(self: *const Self) ?*c.xcb_list_properties_reply_t {
+        const cookie = c.xcb_list_properties(
+            self.connection,
+            self.window,
+        );
+        log.debug(
+            \\getting property list of window `{}`. sequence number: {x}
+        , .{ self.window, cookie.sequence });
+        const reply = c.xcb_list_properties_reply(
+            self.connection,
+            cookie,
+            null,
+        );
+        return reply;
+    }
+    pub fn getProperty(
+        self: *const Self,
+        property: c.xcb_atom_t,
+        property_type: c.xcb_atom_t,
+        long_offset: u32,
+        long_length: u32,
+    ) ?*c.xcb_get_property_reply_t {
+        const cookie = c.xcb_get_property(
+            self.connection,
+            0,
+            self.window,
+            property,
+            property_type,
+            long_offset,
+            long_length,
+        );
+        log.debug(
+            \\getting property list of window `{}`. sequence number: {x}
+        , .{ self.window, cookie.sequence });
+        const reply = c.xcb_get_geometry_reply(
+            self.connection,
+            cookie,
+            null,
+        );
+        return reply;
+    }
+};
 
 fn handleCreateNotify() void {}
 fn handleDestroyNotify() void {}
 fn handleUnmapNotify() void {}
 fn handleMapNotify() void {}
-fn handleMapRequest(con: *XcbConnection, ev: *const XcbGenericEvent) !void {
+fn handleMapRequest(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
     log.debug(
         \\handling map request. window: {}, parent: {}
     , .{ event.window, event.parent });
-    //const value_mask = c.XCB_CONFIG_WINDOW_BORDER_WIDTH;
-    //const value_list: c.xcb_configure_window_value_list_t = blk: {
-    //    var val: c.xcb_configure_window_value_list_t = undefined;
-    //    val.border_width = 10;
-    //    break :blk undefined;
-    //};
-    //const configure_cookie = c.xcb_configure_window_aux(con, event.window, value_mask, &value_list);
-    //log.debug(
-    //    \\configuring window `{}`. sequence id: `{x}`
-    //, .{ event.window, configure_cookie.sequence });
+
     const map_cookie = c.xcb_map_window(con, event.window);
     log.debug(
         \\mapping window `{}`. sequence id: `{x}`
     , .{ event.window, map_cookie.sequence });
+
     assert(c.xcb_flush(con) > 0);
 }
 fn handleReparentNotify() void {}
 fn handleConfigureNotify() void {}
 fn handleResizeRequest() void {}
-fn handleConfigureRequest(con: *XcbConnection, ev: *const XcbGenericEvent) !void {
-    _ = con;
-    const event: *const c.xcb_configure_window_request_t = @ptrCast(ev);
-    log.debug(
-        \\ignoring configure window request. window: {}, value_mask: {}
-    , .{ event.window, event.value_mask });
-}
+fn handleConfigureRequest() !void {}
 fn handleCirculateNotify() void {}
 fn hanldeCirculateRequest() void {}
 fn handlePropertyNotify() void {}
 fn handleMappingNotify() void {}
 fn hanldeClientMessage() void {}
 
-fn eventLoop(con: *XcbConnection) !void {
-    while (@as(?*XcbGenericEvent, c.xcb_wait_for_event(con))) |event| {
+fn eventLoop(con: *c.xcb_connection_t) !void {
+    while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(con))) |event| {
         defer free(event);
-        switch (event.response_type & 0x7f) {
+        switch (c.XCB_EVENT_RESPONSE_TYPE(event)) {
             c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
-            c.XCB_CONFIGURE_REQUEST => try handleConfigureRequest(con, event),
             else => {
                 log.warn(
                     \\received unknown x event of type `{}` while or after request `{x}`
