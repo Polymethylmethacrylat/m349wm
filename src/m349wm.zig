@@ -118,12 +118,18 @@ fn eventLoop(con: *c.xcb_connection_t) !void {
         switch (c.XCB_EVENT_RESPONSE_TYPE(event)) {
             c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
             else => {
-                log.warn(
-                    \\received unknown x event of type `{}` while or after request `{x}`
-                , .{
-                    event.response_type,
-                    event.sequence,
-                });
+                if (@as(?[*:0]const u8, c.xcb_event_get_label(event.response_type))) |label| {
+                    log.warn(
+                        \\discarding event `{s}` while or after request `{x}`
+                    , .{ label, event.sequence });
+                } else {
+                    log.warn(
+                        \\received unknown x event of type `{}` while or after request `{x}`
+                    , .{
+                        event.response_type,
+                        event.sequence,
+                    });
+                }
             },
         }
     } else return error.XcbConnError;
