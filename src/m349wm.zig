@@ -82,9 +82,21 @@ const Client = struct {
             null,
         );
         return reply;
+fn handleError(ev: *const c.xcb_generic_event_t) void {
+    const err: *const c.xcb_generic_error_t = @ptrCast(ev);
+    if (@as(?[*:0]const u8, c.xcb_event_get_error_label(err.error_code))) |label| {
+        log.warn(
+            \\discarding error `{s}` while or after request `{x}`
+        , .{ label, err.sequence });
+    } else {
+        log.warn(
+            \\received unknown x error code `{}` while or after request `{x}`
+        , .{
+            err.error_code,
+            err.sequence,
+        });
     }
-};
-
+}
 fn handleCreateNotify() void {}
 fn handleDestroyNotify() void {}
 fn handleUnmapNotify() void {}
