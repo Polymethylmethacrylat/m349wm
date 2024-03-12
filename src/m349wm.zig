@@ -1,452 +1,356 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const UHashMap = std.AutoHashMapUnmanaged;
 const log = std.log.scoped(.m349wm);
+const Allocator = std.mem.Allocator;
+const c_allocator = std.heap.c_allocator;
+const assert = std.debug.assert;
+const print = std.debug.print;
+const free = std.c.free;
+
+const builtin = @import("builtin");
 
 const c = @import("c.zig");
-const presets = @import("presets.zig");
-const wm = @import("wm.zig");
-const Client = wm.Client;
-
-const EventHandler = *const fn (ev: *c.xcb_generic_event_t) anyerror!void;
-const KeyHandlersT = UHashMap(
-    KeyEvent,
-    wm.Action,
-);
-const KeyEvent = struct {
-    keycode: c.xcb_keycode_t,
-    state: u16,
-    key_state: wm.KeyState,
+const Client = struct {
+    window: c.xcb_window_t,
+    mapped: bool = false,
 };
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
-var conn: *c.xcb_connection_t = undefined;
-var screen: *c.xcb_screen_t = undefined;
-const event_handlers: [128]?EventHandler = blk: {
-    var ev_hndls: [128]?EventHandler = .{null} ** 128;
-    ev_hndls[0] = handleError;
-    ev_hndls[c.XCB_KEY_PRESS] = handleKeyEvent;
-    ev_hndls[c.XCB_KEY_RELEASE] = handleKeyEvent;
-    ev_hndls[c.XCB_CREATE_NOTIFY] = handleCreateNotify;
-    ev_hndls[c.XCB_DESTROY_NOTIFY] = handleDestroyNotify;
-    ev_hndls[c.XCB_UNMAP_NOTIFY] = handleUnmapNotify;
-    ev_hndls[c.XCB_MAP_NOTIFY] = handleMapNotify;
-    ev_hndls[c.XCB_MAP_REQUEST] = handleMapRequest;
-    ev_hndls[c.XCB_REPARENT_NOTIFY] = handleReparentNotify;
-    ev_hndls[c.XCB_CONFIGURE_NOTIFY] = handleConfigureNotify;
-    ev_hndls[c.XCB_GRAVITY_NOTIFY] = handleGravityNotify;
-    ev_hndls[c.XCB_CONFIGURE_REQUEST] = handleConfigureRequest;
-    ev_hndls[c.XCB_CIRCULATE_REQUEST] = handleCirculateRequest;
-    break :blk ev_hndls;
-};
-var key_states: [256]wm.KeyState = .{.released} ** 256;
-var mod_state: u16 = 0;
-var key_handlers: KeyHandlersT = undefined;
-var clients: ArrayList(Client) = undefined;
-var current_client: ?usize = null;
+var clients: std.ArrayList(Client) = undefined;
+var screen: *const c.xcb_screen_t = undefined;
 
-pub fn getConnection() *c.xcb_connection_t {
-    return conn;
-}
-pub fn getClients() []Client {
-    return clients.items;
-}
-pub fn getCurrentClient() ?*Client {
-    return if (current_client) |i| &clients.items[i] else null;
-}
-pub fn setCurrentClient(suggestion: Client) !void {
-    for (clients.items) |client| {
-        if (client.window == suggestion.window)
-            return;
-    } else return error.NotFound;
-}
-pub fn getScreen() *c.xcb_screen_t {
-    return screen;
-}
+const violet = 0x9f00ff;
+const dark_violet = 0x060066;
+const border_width = 3;
 
-pub fn getKeyStates() *const [256]wm.KeyState {
-    return &key_states;
-}
+/// assumes that `clients` is ordered after windows being mapped or not
+fn arrangeClients(con: *c.xcb_connection_t) void {
+    const mapped: usize = blk: {
+        var i: usize = 0;
+        while (i < clients.items.len and clients.items[i].mapped) : (i += 1) {}
+        break :blk i;
+    };
+    if (mapped == 0) return;
+    const master = .{
+        .width = (screen.width_in_pixels * 2) / 3,
+        .count = mapped / 3 + 1,
+    };
+    const stack = .{
+        .width = screen.width_in_pixels - master.width,
+        .count = mapped - master.count,
+    };
 
-pub fn getModState() u16 {
-    return mod_state;
-}
-
-fn handleError(ev: *c.xcb_generic_event_t) !void {
-    const err: *c.xcb_generic_error_t = @ptrCast(ev);
-
-    log.warn("unhandled error: {}", .{err.error_code});
-}
-
-fn handleKeyEvent(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_key_press_event_t = @ptrCast(ev);
-    const keycode = e.detail;
-    mod_state = e.state & ~@as(u16, 0xff00);
-
-    for (&key_states, 0..) |*key_state, i| {
-        if (i == keycode) {
-            key_state.* = if (e.response_type == c.XCB_KEY_PRESS) .pressing else .releasing;
-
-            if (key_handlers.get(.{ .keycode = @truncate(i), .state = mod_state, .key_state = key_state.* })) |act| {
-                try act.execute();
-            }
-        }
-
-        switch (key_state.*) {
-            .pressing => key_state.* = .pressed,
-            .releasing => key_state.* = .released,
-            else => {},
-        }
-
-        if (key_handlers.get(.{ .keycode = @truncate(i), .state = mod_state, .key_state = key_state.* })) |act| {
-            try act.execute();
-        }
+    defer assert(c.xcb_flush(con) > 0);
+    if (mapped == 1) {
+        const window = clients.items[0].window;
+        assert(clients.items[0].mapped);
+        const value_mask =
+            c.XCB_CONFIG_WINDOW_X |
+            c.XCB_CONFIG_WINDOW_Y |
+            c.XCB_CONFIG_WINDOW_WIDTH |
+            c.XCB_CONFIG_WINDOW_HEIGHT;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.x = 0;
+        value_list.y = 0;
+        value_list.width = screen.width_in_pixels - border_width * 2;
+        value_list.height = screen.height_in_pixels - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
+        return;
+    }
+    for (clients.items[0..master.count], 0..) |client, i| {
+        const window: c.xcb_window_t = client.window;
+        assert(client.mapped);
+        const value_mask =
+            c.XCB_CONFIG_WINDOW_X |
+            c.XCB_CONFIG_WINDOW_Y |
+            c.XCB_CONFIG_WINDOW_WIDTH |
+            c.XCB_CONFIG_WINDOW_HEIGHT;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.x = @intCast(
+            if (i == 0) 0 else (master.width / master.count) * i + (master.width % master.count),
+        );
+        value_list.y = 0;
+        value_list.width = @intCast(
+            master.width / master.count + if (i == 0) master.width % master.count else 0,
+        );
+        value_list.height = screen.height_in_pixels - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
+    }
+    for (clients.items[master.count..][0..stack.count], 0..) |client, i| {
+        const window: c.xcb_window_t = client.window;
+        assert(client.mapped);
+        const value_mask =
+            c.XCB_CONFIG_WINDOW_X |
+            c.XCB_CONFIG_WINDOW_Y |
+            c.XCB_CONFIG_WINDOW_WIDTH |
+            c.XCB_CONFIG_WINDOW_HEIGHT;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.x = master.width + 1;
+        value_list.y = @intCast(
+            if (i == 0)
+                0
+            else
+                (screen.height_in_pixels / stack.count) * i +
+                    (screen.height_in_pixels % stack.count),
+        );
+        value_list.height = @intCast(
+            screen.height_in_pixels / stack.count +
+                if (i == 0) screen.height_in_pixels % stack.count else 0,
+        );
+        value_list.width = stack.width - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
     }
 }
 
-fn handleCreateNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_create_notify_event_t = @ptrCast(ev);
-    const client: Client = .{
-        .parent = e.parent,
-        .window = e.window,
-        .x = e.x,
-        .y = e.y,
-        .width = e.width,
-        .height = e.height,
-        .border_width = e.border_width,
-        .override_redirect = e.override_redirect != 0,
-        .mapped = false,
-    };
-    log.debug("a new client has been created: {}", .{client});
-
-    try clients.append(client);
-    current_client = clients.items.len - 1;
+fn handleError(ev: *const c.xcb_generic_event_t) void {
+    const err: *const c.xcb_generic_error_t = @ptrCast(ev);
+    if (@as(?[*:0]const u8, c.xcb_event_get_error_label(err.error_code))) |label| {
+        log.warn(
+            \\discarding error `{s}` while or after request `{x}`
+        , .{ label, err.sequence });
+    } else {
+        log.warn(
+            \\received unknown x error code `{}` while or after request `{x}`
+        , .{
+            err.error_code,
+            err.sequence,
+        });
+    }
 }
-
-fn handleDestroyNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
-
+fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+    const event: *const c.xcb_create_notify_event_t = @ptrCast(ev);
+    log.debug(
+        \\handling create notify request. window: {}
+    , .{event.window});
+    try clients.append(.{ .window = event.window });
+    {
+        const value_mask: u16 = c.XCB_CONFIG_WINDOW_BORDER_WIDTH;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.border_width = border_width;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            event.window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ event.window, cookie.sequence });
+        assert(c.xcb_request_check(con, cookie) == null);
+    }
+    {
+        const value_mask: u16 = c.XCB_CW_BORDER_PIXEL | c.XCB_CW_BORDER_PIXMAP;
+        var value_list: c.xcb_change_window_attributes_value_list_t = undefined;
+        value_list.border_pixel = dark_violet;
+        value_list.border_pixmap = c.XCB_PIXMAP_NONE;
+        const cookie = c.xcb_change_window_attributes_aux(
+            con,
+            event.window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ changing window attributes. window:`{}`; sequence: {x}
+        , .{ event.window, cookie.sequence });
+        assert(c.xcb_request_check(con, cookie) == null);
+    }
+}
+fn handleDestroyNotify(ev: *const c.xcb_generic_event_t) void {
+    const event: *const c.xcb_destroy_notify_event_t = @ptrCast(ev);
     for (clients.items, 0..) |client, i| {
-        if (client.window != e.window)
-            continue;
-
-        if (current_client) |*j| {
-            if (i == j.*) {
-                current_client = null;
-            } else if (j.* == clients.items.len - 1) {
-                j.* = i;
-            }
-        }
-
-        const destroyed_client = clients.swapRemove(i);
-        log.debug("a client got destroyed: {}", .{destroyed_client});
-        break;
-    } else {
-        log.warn("an unknown client got destroyed: {}", .{e});
-    }
-}
-
-fn handleMapRequest(ev: *c.xcb_generic_event_t) !void {
-    const window: c.xcb_window_t = @as(*c.xcb_map_request_event_t, @ptrCast(ev)).window;
-    _ = c.xcb_map_window_checked(conn, window);
-    _ = c.xcb_flush(conn);
-
-    for (clients.items) |*client| {
-        if (client.window != window)
-            continue;
-        client.mapped = true;
+        if (client.window != event.window) continue;
+        _ = clients.orderedRemove(i);
         break;
     }
+    log.debug(
+        \\handling destroy notify request. window: {}
+    , .{event.window});
 }
-
-fn handleMapNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-        client.mapped = true;
+fn handleUnmapNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+    const event: *const c.xcb_unmap_notify_event_t = @ptrCast(ev);
+    for (clients.items, 0..) |client, i| {
+        if (client.window != event.window) continue;
+        var tmp: Client = clients.orderedRemove(i);
+        tmp.mapped = false;
+        try clients.append(tmp);
         break;
     }
+    log.debug(
+        \\handling unmap notify. window: {}
+    , .{event.window});
+    arrangeClients(con);
 }
-
-fn handleUnmapNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_destroy_notify_event_t = @ptrCast(ev);
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-        client.mapped = false;
-        break;
+fn handleMapNotify() void {}
+fn handleMapRequest(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+    const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
+    {
+        var tmp = for (clients.items, 0..) |client, i| {
+            if (client.window != event.window) continue;
+            break clients.orderedRemove(i);
+        } else unreachable;
+        tmp.mapped = true;
+        try clients.insert(0, tmp);
     }
+    log.debug(
+        \\handling map request. window: {}, parent: {}
+    , .{ event.window, event.parent });
+
+    const map_cookie = c.xcb_map_window(con, event.window);
+    log.debug(
+        \\mapping window `{}`. sequence id: `{x}`
+    , .{ event.window, map_cookie.sequence });
+    assert(c.xcb_flush(con) > 0);
+    arrangeClients(con);
 }
+fn handleReparentNotify() void {}
+fn handleConfigureNotify() void {}
+fn handleResizeRequest() void {}
+fn handleConfigureRequest() void {}
+fn handleCirculateNotify() void {}
+fn handleCirculateRequest() void {}
+fn handlePropertyNotify() void {}
+fn handleMappingNotify() void {}
+fn handleClientMessage() void {}
 
-fn handleReparentNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_reparent_notify_event_t = @ptrCast(ev);
-    const translate_cookie = c.xcb_translate_coordinates(conn, e.parent, screen.root, e.x, e.y);
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-
-        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
-        client.parent = e.parent;
-        // only single monitor setups rn
-        client.x = translate_repl.*.dst_x;
-        client.y = translate_repl.*.dst_y;
-        break;
-    }
-}
-
-fn handleConfigureNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_configure_notify_event_t = @ptrCast(ev);
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-
-        const translate_cookie = c.xcb_translate_coordinates(conn, client.parent, screen.root, e.x, e.y);
-        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
-        // only single monitor setups rn
-        client.x = translate_repl.*.dst_x;
-        client.y = translate_repl.*.dst_y;
-        client.width = e.width;
-        client.height = e.height;
-        client.border_width = e.border_width;
-        client.override_redirect = e.override_redirect != 0;
-        break;
-    }
-}
-
-fn handleGravityNotify(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_gravity_notify_event_t = @ptrCast(ev);
-
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-
-        const translate_cookie = c.xcb_translate_coordinates(conn, client.parent, screen.root, e.x, e.y);
-        const translate_repl = c.xcb_translate_coordinates_reply(conn, translate_cookie, null);
-        // only single monitor setups rn
-        client.x = translate_repl.*.dst_x;
-        client.y = translate_repl.*.dst_y;
-        break;
-    }
-}
-
-fn handleConfigureRequest(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_configure_request_event_t = @ptrCast(ev);
-    const value_mask: u16 =
-        c.XCB_CONFIG_WINDOW_X |
-        c.XCB_CONFIG_WINDOW_Y |
-        c.XCB_CONFIG_WINDOW_WIDTH |
-        c.XCB_CONFIG_WINDOW_HEIGHT |
-        c.XCB_CONFIG_WINDOW_BORDER_WIDTH |
-        c.XCB_CONFIG_WINDOW_SIBLING |
-        c.XCB_CONFIG_WINDOW_STACK_MODE;
-
-    const value_list = [_]u32{
-        @as(u16, @bitCast(e.x)),
-        @as(u16, @bitCast(e.y)),
-        e.width,
-        e.height,
-        e.border_width,
-        e.sibling,
-        e.stack_mode,
-    };
-
-    _ = c.xcb_configure_window_checked(conn, e.window, value_mask, &value_list);
-    _ = c.xcb_flush(conn);
-
-    for (clients.items) |*client| {
-        if (client.window != e.window)
-            continue;
-
-        client.x = e.x;
-        client.y = e.y;
-        client.width = e.width;
-        client.height = e.height;
-        client.border_width = e.border_width;
-        break;
-    }
-}
-
-fn handleCirculateRequest(ev: *c.xcb_generic_event_t) !void {
-    const e: *c.xcb_circulate_request_event_t = @ptrCast(ev);
-    _ = c.xcb_circulate_window_checked(
-        conn,
-        if (e.place == c.XCB_PLACE_ON_TOP)
-            c.XCB_CIRCULATE_RAISE_LOWEST
-        else
-            c.XCB_CIRCULATE_LOWER_HIGHEST,
-        e.window,
-    );
-    _ = c.xcb_flush(conn);
-}
-
-fn eventLoop() !void {
-    while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(conn))) |ev| {
-        defer c.free(ev);
-        if (event_handlers[ev.response_type & ~@as(u8, 0x80)]) |ev_handl| {
-            log.debug("handling event: {}", .{ev.response_type});
-            ev_handl(ev) catch |err| {
-                if (err == error.Exit) {
-                    return;
+fn eventLoop(con: *c.xcb_connection_t) !void {
+    while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(con))) |event| {
+        defer free(event);
+        switch (c.XCB_EVENT_RESPONSE_TYPE(event)) {
+            0 => handleError(event),
+            c.XCB_CREATE_NOTIFY => try handleCreateNotify(con, event),
+            c.XCB_DESTROY_NOTIFY => handleDestroyNotify(event),
+            c.XCB_UNMAP_NOTIFY => try handleUnmapNotify(con, event),
+            c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
+            else => {
+                if (@as(?[*:0]const u8, c.xcb_event_get_label(event.response_type))) |label| {
+                    log.warn(
+                        \\discarding event `{s}` while or after request `{x}`
+                    , .{ label, event.sequence });
                 } else {
-                    return err;
+                    log.warn(
+                        \\received unknown x event of type `{}` while or after request `{x}`
+                    , .{
+                        event.response_type,
+                        event.sequence,
+                    });
                 }
-            };
-        } else {
-            log.info("encountered unhandled event: {}", .{ev.response_type});
+            },
         }
-    } else {
-        // might expand errorhandling in the future
-        return error.ConnectionError;
-    }
-}
-
-fn setupKeys() !void {
-    key_handlers = KeyHandlersT{};
-    errdefer key_handlers.deinit(allocator);
-    const keysyms = c.xcb_key_symbols_alloc(conn).?;
-    defer c.xcb_key_symbols_free(keysyms);
-    const key_mappings_count: u32 = blk: {
-        var count: u32 = presets.default.key_mappings.len;
-        if (!presets.default.num_lock_explicit)
-            count *= 2;
-        if (presets.default.caps_eqls_shift)
-            count *= 2;
-        break :blk count;
-    };
-    const numloc_mod: c.xcb_mod_mask_t = blk: {
-        if (presets.default.num_lock_explicit)
-            break :blk undefined;
-        const numloc_code: c.xcb_keycode_t = c.xcb_key_symbols_get_keycode(keysyms, c.XK_Num_Lock).*;
-        const mod_map_req = c.xcb_get_modifier_mapping(conn);
-        const mod_map_repl = c.xcb_get_modifier_mapping_reply(conn, mod_map_req, null);
-        const mod_keys = c.xcb_get_modifier_mapping_keycodes(mod_map_repl);
-        const mod_keys_len = c.xcb_get_modifier_mapping_keycodes_length(mod_map_repl);
-        const group_size = mod_map_repl.*.keycodes_per_modifier;
-
-        for (mod_keys[0..@intCast(mod_keys_len)], 0..) |mod_key, i| {
-            if (mod_key != numloc_code)
-                continue;
-
-            break :blk switch (i / group_size) {
-                0 => c.XCB_MOD_MASK_SHIFT,
-                1 => c.XCB_MOD_MASK_LOCK,
-                2 => c.XCB_MOD_MASK_CONTROL,
-                3 => c.XCB_MOD_MASK_1,
-                4 => c.XCB_MOD_MASK_2,
-                5 => c.XCB_MOD_MASK_3,
-                6 => c.XCB_MOD_MASK_4,
-                7 => c.XCB_MOD_MASK_5,
-                else => unreachable,
-            };
-        }
-
-        break :blk 0;
-    };
-    try key_handlers.ensureTotalCapacity(allocator, key_mappings_count);
-
-    for (presets.default.key_mappings) |key_map| {
-        const key_code: c.xcb_keycode_t = c.xcb_key_symbols_get_keycode(keysyms, key_map.key).*;
-        const key_mod: c.xcb_mod_mask_t = key_map.mod;
-        const action = key_map.key_state;
-        const func = key_map.action;
-
-        _ = c.xcb_grab_key(conn, 1, screen.root, @truncate(key_mod), key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-        key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = @truncate(key_mod), .key_state = action }, func);
-
-        if (!presets.default.num_lock_explicit) {
-            var mod: u16 = @truncate(key_mod ^ numloc_mod);
-            _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
-
-            if (presets.default.caps_eqls_shift) {
-                mod ^= @truncate(@as(c_uint, @intCast(c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK)));
-                _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
-
-                mod = @truncate(key_mod ^ (c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK));
-                _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-                key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
-            }
-        } else if (presets.default.caps_eqls_shift) {
-            const mod: u16 = @truncate(key_mod ^ (c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_LOCK));
-            _ = c.xcb_grab_key(conn, 1, screen.root, mod, key_code, c.XCB_GRAB_MODE_ASYNC, c.XCB_GRAB_MODE_ASYNC);
-            key_handlers.putAssumeCapacity(.{ .keycode = key_code, .state = mod, .key_state = action }, func);
-        }
-    }
-    _ = c.xcb_flush(conn);
+    } else return error.XcbConnError;
 }
 
 pub fn main() !void {
-    defer {
-        switch (gpa.deinit()) {
-            .ok => log.info("no leaks detected", .{}),
-            .leak => log.warn("memory leaks detected!", .{}),
-        }
-    }
-
-    // never returns null
-    conn = c.xcb_connect(null, null).?;
-    defer c.xcb_disconnect(conn);
-    if (c.xcb_connection_has_error(conn) != 0)
-        return error.ConnectionError;
-
-    // sets screen
-    screen = @ptrCast(c.xcb_setup_roots_iterator(c.xcb_get_setup(conn)).data);
-
-    log.debug("connection succesfull: {}", .{ .screen = screen });
-
-    // Request wm-permissions
-    {
-        const values = comptime blk: {
-            var val = c.XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
-            val |= c.XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-            val |= c.XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
-            val |= c.XCB_EVENT_MASK_PROPERTY_CHANGE;
-            break :blk val;
-        };
-
-        const wm_request = c.xcb_change_window_attributes_checked(conn, screen.root, c.XCB_CW_EVENT_MASK, &values);
-        _ = c.xcb_flush(conn);
-        if (c.xcb_request_check(conn, wm_request)) |_| {
-            return error.WmRequestFailed;
-        }
-    }
-
-    try setupKeys();
-    defer key_handlers.deinit(allocator);
-
-    clients = try ArrayList(Client).initCapacity(allocator, 64);
+    const allocator = c_allocator;
+    clients = try @TypeOf(clients).initCapacity(allocator, 64);
     defer clients.deinit();
 
-    // gather already existing clients
-    {
-        const tree_cookie = c.xcb_query_tree(conn, screen.root);
-        const tree_repl = c.xcb_query_tree_reply(conn, tree_cookie, null);
-        const children_length: usize = @intCast(c.xcb_query_tree_children_length(tree_repl));
-        const children = c.xcb_query_tree_children(tree_repl)[0..children_length];
+    log.debug(
+        \\trying to connect to X server...
+    , .{});
+    var screenp: c_int = undefined;
+    const con = c.xcb_connect(null, &screenp) orelse unreachable;
+    defer c.xcb_disconnect(con);
+    const con_err = c.xcb_connection_has_error(con);
+    switch (con_err) {
+        0 => {},
+        c.XCB_CONN_ERROR => {
+            log.err(
+                \\xcb connection errors because of socket, pipe and other stream errors. 
+            , .{});
+            return;
+        },
+        c.XCB_CONN_CLOSED_PARSE_ERR => {
+            log.err(
+                \\Connection closed, error during parsing display string.
+            , .{});
+            log.info(
+                \\Hint: is `$DISPLAY` set correctly?
+            , .{});
+            return;
+        },
+        c.XCB_CONN_CLOSED_INVALID_SCREEN => {
+            log.err(
+                \\Connection closed because the server does not have a screen matching the display.
+            , .{});
+            log.info(
+                \\Hint: is `$DISPLAY` set correctly?
+            , .{});
+            return;
+        },
+        else => |errno| {
+            log.err("Unknown connection error: {}", .{errno});
+            return error.UnknownConnErr;
+        },
+    }
+    log.debug(
+        \\connected successfully. Desired screen is: {}
+    , .{screenp});
 
-        for (children) |child| {
-            const geometry_cookie = c.xcb_get_geometry(conn, child);
-            const attributes_cookie = c.xcb_get_window_attributes(conn, child);
-            const geometry_repl = c.xcb_get_geometry_reply(conn, geometry_cookie, null);
-            const attributes_repl = c.xcb_get_window_attributes_reply(conn, attributes_cookie, null);
-            var client: Client = .{
-                .parent = screen.root,
-                .window = child,
-                .x = geometry_repl.*.x,
-                .y = geometry_repl.*.y,
-                .width = geometry_repl.*.width,
-                .height = geometry_repl.*.height,
-                .border_width = geometry_repl.*.height,
-                .override_redirect = attributes_repl.*.override_redirect != 0,
-                .mapped = attributes_repl.*.map_state != c.XCB_MAP_STATE_UNMAPPED,
-            };
-            try clients.append(client);
+    screen = c.xcb_aux_get_screen(con, screenp);
+
+    root_ev: {
+        const value_mask = c.XCB_CW_EVENT_MASK;
+        const value_list = blk: {
+            var vl: c.xcb_change_window_attributes_value_list_t = undefined;
+            vl.event_mask = c.XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+            vl.event_mask |= c.XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
+            vl.event_mask |= c.XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
+            vl.event_mask |= c.XCB_EVENT_MASK_RESIZE_REDIRECT;
+            break :blk vl;
+        };
+
+        const wm_root_ev_req_cookie = c.xcb_change_window_attributes_aux_checked(
+            con,
+            screen.root,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\trying to register for desired events of root window `{}`, sequence number: `{x}`
+        , .{
+            screen.root,
+            wm_root_ev_req_cookie.sequence,
+        });
+        assert(c.xcb_flush(con) > 0);
+        const err = c.xcb_request_check(con, wm_root_ev_req_cookie) orelse break :root_ev;
+        defer free(err);
+        switch (err.*.error_code) {
+            c.XCB_ACCESS => {
+                std.log.err(
+                    \\unable to register for desired events of root window
+                , .{});
+                return;
+            },
+            else => |errno| {
+                log.err(
+                    \\unknown error while registering for events of root window: {}
+                , .{errno});
+                return error.XcbUnknownError;
+            },
         }
     }
 
-    try eventLoop();
+    try eventLoop(con);
 }
