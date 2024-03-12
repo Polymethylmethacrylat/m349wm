@@ -19,31 +19,29 @@ var screen: *const c.xcb_screen_t = undefined;
 
 const violet = 0x9f00ff;
 const dark_violet = 0x060066;
+const border_width = 3;
 
+/// assumes that `clients` is ordered after windows being mapped or not
 fn arrangeClients(con: *c.xcb_connection_t) void {
     const mapped: usize = blk: {
         var i: usize = 0;
-        for (clients.items) |client| {
-            if (client.mapped) i += 1;
-        }
+        while (i < clients.items.len and clients.items[i].mapped) : (i += 1) {}
         break :blk i;
     };
     if (mapped == 0) return;
     const master = .{
         .width = (screen.width_in_pixels * 2) / 3,
-        .count = 1,
+        .count = mapped / 3 + 1,
     };
     const stack = .{
         .width = screen.width_in_pixels - master.width,
         .count = mapped - master.count,
     };
-    _ = stack;
 
     defer assert(c.xcb_flush(con) > 0);
     if (mapped == 1) {
-        const window = for (clients.items) |client| {
-            if (client.mapped) break client.window;
-        } else unreachable;
+        const window = clients.items[0].window;
+        assert(clients.items[0].mapped);
         const value_mask =
             c.XCB_CONFIG_WINDOW_X |
             c.XCB_CONFIG_WINDOW_Y |
@@ -52,15 +50,77 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
         var value_list: c.xcb_configure_window_value_list_t = undefined;
         value_list.x = 0;
         value_list.y = 0;
-        value_list.width = screen.width_in_pixels - 6;
-        value_list.height = screen.height_in_pixels - 6;
-        _ = c.xcb_configure_window_aux_checked(
+        value_list.width = screen.width_in_pixels - border_width * 2;
+        value_list.height = screen.height_in_pixels - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
             con,
             window,
             value_mask,
             &value_list,
         );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
         return;
+    }
+    for (clients.items[0..master.count], 0..) |client, i| {
+        const window: c.xcb_window_t = client.window;
+        assert(client.mapped);
+        const value_mask =
+            c.XCB_CONFIG_WINDOW_X |
+            c.XCB_CONFIG_WINDOW_Y |
+            c.XCB_CONFIG_WINDOW_WIDTH |
+            c.XCB_CONFIG_WINDOW_HEIGHT;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.x = @intCast(
+            if (i == 0) 0 else (master.width / master.count) * i + (master.width % master.count),
+        );
+        value_list.y = 0;
+        value_list.width = @intCast(
+            master.width / master.count + if (i == 0) master.width % master.count else 0,
+        );
+        value_list.height = screen.height_in_pixels - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
+    }
+    for (clients.items[master.count..][0..stack.count], 0..) |client, i| {
+        const window: c.xcb_window_t = client.window;
+        assert(client.mapped);
+        const value_mask =
+            c.XCB_CONFIG_WINDOW_X |
+            c.XCB_CONFIG_WINDOW_Y |
+            c.XCB_CONFIG_WINDOW_WIDTH |
+            c.XCB_CONFIG_WINDOW_HEIGHT;
+        var value_list: c.xcb_configure_window_value_list_t = undefined;
+        value_list.x = master.width + 1;
+        value_list.y = @intCast(
+            if (i == 0)
+                0
+            else
+                (screen.height_in_pixels / stack.count) * i +
+                    (screen.height_in_pixels % stack.count),
+        );
+        value_list.height = @intCast(
+            screen.height_in_pixels / stack.count +
+                if (i == 0) screen.height_in_pixels % stack.count else 0,
+        );
+        value_list.width = stack.width - border_width * 2;
+        const cookie = c.xcb_configure_window_aux(
+            con,
+            window,
+            value_mask,
+            &value_list,
+        );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ window, cookie.sequence });
     }
 }
 
@@ -83,18 +143,21 @@ fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t
     const event: *const c.xcb_create_notify_event_t = @ptrCast(ev);
     log.debug(
         \\handling create notify request. window: {}
-    , .{ event.window });
+    , .{event.window});
     try clients.append(.{ .window = event.window });
     {
         const value_mask: u16 = c.XCB_CONFIG_WINDOW_BORDER_WIDTH;
         var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.border_width = 3;
-        const cookie = c.xcb_configure_window_aux_checked(
+        value_list.border_width = border_width;
+        const cookie = c.xcb_configure_window_aux(
             con,
             event.window,
             value_mask,
             &value_list,
         );
+        log.debug(
+            \\ configuring window `{}`. sequence: {x}
+        , .{ event.window, cookie.sequence });
         assert(c.xcb_request_check(con, cookie) == null);
     }
     {
@@ -102,12 +165,15 @@ fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t
         var value_list: c.xcb_change_window_attributes_value_list_t = undefined;
         value_list.border_pixel = dark_violet;
         value_list.border_pixmap = c.XCB_PIXMAP_NONE;
-        const cookie = c.xcb_change_window_attributes_aux_checked(
+        const cookie = c.xcb_change_window_attributes_aux(
             con,
             event.window,
             value_mask,
             &value_list,
         );
+        log.debug(
+            \\ changing window attributes. window:`{}`; sequence: {x}
+        , .{ event.window, cookie.sequence });
         assert(c.xcb_request_check(con, cookie) == null);
     }
 }
@@ -120,37 +186,42 @@ fn handleDestroyNotify(ev: *const c.xcb_generic_event_t) void {
     }
     log.debug(
         \\handling destroy notify request. window: {}
-    , .{ event.window });
+    , .{event.window});
 }
-fn handleUnmapNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) void {
+fn handleUnmapNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_unmap_notify_event_t = @ptrCast(ev);
-    for (clients.items) |*client| {
+    for (clients.items, 0..) |client, i| {
         if (client.window != event.window) continue;
-        client.mapped = false;
+        var tmp: Client = clients.orderedRemove(i);
+        tmp.mapped = false;
+        try clients.append(tmp);
         break;
     }
     log.debug(
-        \\handling unmap request. window: {}
-    , .{ event.window });
+        \\handling unmap notify. window: {}
+    , .{event.window});
     arrangeClients(con);
 }
 fn handleMapNotify() void {}
 fn handleMapRequest(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
-    for (clients.items) |*client| {
-        if (client.window != event.window) continue;
-        client.mapped = true;
-        break;
+    {
+        var tmp = for (clients.items, 0..) |client, i| {
+            if (client.window != event.window) continue;
+            break clients.orderedRemove(i);
+        } else unreachable;
+        tmp.mapped = true;
+        try clients.insert(0, tmp);
     }
     log.debug(
         \\handling map request. window: {}, parent: {}
     , .{ event.window, event.parent });
 
-    const map_cookie = c.xcb_map_window_checked(con, event.window);
+    const map_cookie = c.xcb_map_window(con, event.window);
     log.debug(
         \\mapping window `{}`. sequence id: `{x}`
     , .{ event.window, map_cookie.sequence });
-    assert(c.xcb_request_check(con, map_cookie) == null);
+    assert(c.xcb_flush(con) > 0);
     arrangeClients(con);
 }
 fn handleReparentNotify() void {}
@@ -170,7 +241,7 @@ fn eventLoop(con: *c.xcb_connection_t) !void {
             0 => handleError(event),
             c.XCB_CREATE_NOTIFY => try handleCreateNotify(con, event),
             c.XCB_DESTROY_NOTIFY => handleDestroyNotify(event),
-            c.XCB_UNMAP_NOTIFY => handleUnmapNotify(con, event),
+            c.XCB_UNMAP_NOTIFY => try handleUnmapNotify(con, event),
             c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
             else => {
                 if (@as(?[*:0]const u8, c.xcb_event_get_label(event.response_type))) |label| {
