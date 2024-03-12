@@ -3,3 +3,5 @@ pub usingnamespace @cImport({
     @cInclude("xcb/xcb_keysyms.h");
     @cInclude("xcb/xcb_util.h");
 });
+
+pub usingnamespace @import("std").c;
