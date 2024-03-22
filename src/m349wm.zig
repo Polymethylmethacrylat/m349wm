@@ -14,12 +14,13 @@ const Client = struct {
     mapped: bool = false,
 };
 
+const violet = 0x9f00ff;
+const dark_violet = 0x390099;
+const border_width = 3;
+
 var clients: std.ArrayList(Client) = undefined;
 var screen: *const c.xcb_screen_t = undefined;
 
-const violet = 0x9f00ff;
-const dark_violet = 0x060066;
-const border_width = 3;
 
 /// assumes that `clients` is ordered after windows being mapped or not
 fn arrangeClients(con: *c.xcb_connection_t) void {
@@ -77,7 +78,8 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
         );
         value_list.y = 0;
         value_list.width = @intCast(
-            master.width / master.count + if (i == 0) master.width % master.count else 0,
+            master.width / master.count - border_width * 2 +
+                if (i == 0) master.width % master.count else 0,
         );
         value_list.height = screen.height_in_pixels - border_width * 2;
         const cookie = c.xcb_configure_window_aux(
@@ -99,7 +101,7 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             c.XCB_CONFIG_WINDOW_WIDTH |
             c.XCB_CONFIG_WINDOW_HEIGHT;
         var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.x = master.width + 1;
+        value_list.x = master.width;
         value_list.y = @intCast(
             if (i == 0)
                 0
@@ -108,7 +110,7 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
                     (screen.height_in_pixels % stack.count),
         );
         value_list.height = @intCast(
-            screen.height_in_pixels / stack.count +
+            screen.height_in_pixels / stack.count - border_width * 2 +
                 if (i == 0) screen.height_in_pixels % stack.count else 0,
         );
         value_list.width = stack.width - border_width * 2;
