@@ -21,7 +21,6 @@ const border_width = 3;
 var clients: std.ArrayList(Client) = undefined;
 var screen: *const c.xcb_screen_t = undefined;
 
-
 /// assumes that `clients` is ordered after windows being mapped or not
 fn arrangeClients(con: *c.xcb_connection_t) void {
     const mapped: usize = blk: {
@@ -30,8 +29,9 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
         break :blk i;
     };
     if (mapped == 0) return;
+
     const master = .{
-        .width = (screen.width_in_pixels * 2) / 3,
+        .width = if (mapped > 1) (screen.width_in_pixels * 2) / 3 else screen.width_in_pixels,
         .count = mapped / 3 + 1,
     };
     const stack = .{
@@ -40,30 +40,6 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
     };
 
     defer assert(c.xcb_flush(con) > 0);
-    if (mapped == 1) {
-        const window = clients.items[0].window;
-        assert(clients.items[0].mapped);
-        const value_mask =
-            c.XCB_CONFIG_WINDOW_X |
-            c.XCB_CONFIG_WINDOW_Y |
-            c.XCB_CONFIG_WINDOW_WIDTH |
-            c.XCB_CONFIG_WINDOW_HEIGHT;
-        var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.x = 0;
-        value_list.y = 0;
-        value_list.width = screen.width_in_pixels - border_width * 2;
-        value_list.height = screen.height_in_pixels - border_width * 2;
-        const cookie = c.xcb_configure_window_aux(
-            con,
-            window,
-            value_mask,
-            &value_list,
-        );
-        log.debug(
-            \\ configuring window `{}`. sequence: {x}
-        , .{ window, cookie.sequence });
-        return;
-    }
     for (clients.items[0..master.count], 0..) |client, i| {
         const window: c.xcb_window_t = client.window;
         assert(client.mapped);
@@ -72,16 +48,20 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             c.XCB_CONFIG_WINDOW_Y |
             c.XCB_CONFIG_WINDOW_WIDTH |
             c.XCB_CONFIG_WINDOW_HEIGHT;
-        var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.x = @intCast(
-            if (i == 0) 0 else (master.width / master.count) * i + (master.width % master.count),
-        );
-        value_list.y = 0;
-        value_list.width = @intCast(
-            master.width / master.count - border_width * 2 +
-                if (i == 0) master.width % master.count else 0,
-        );
-        value_list.height = screen.height_in_pixels - border_width * 2;
+        const value_list = std.mem.zeroInit(c.xcb_configure_window_value_list_t, .{
+            .x = @as(i32, @intCast(
+                (master.width / master.count) * i + if (i != 0)
+                    (master.width % master.count)
+                else
+                    0,
+            )),
+            .y = 0,
+            .width = @as(u32, @intCast(
+                master.width / master.count - border_width * 2 +
+                    if (i == 0) master.width % master.count else 0,
+            )),
+            .height = screen.height_in_pixels - border_width * 2,
+        });
         const cookie = c.xcb_configure_window_aux(
             con,
             window,
@@ -100,20 +80,18 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             c.XCB_CONFIG_WINDOW_Y |
             c.XCB_CONFIG_WINDOW_WIDTH |
             c.XCB_CONFIG_WINDOW_HEIGHT;
-        var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.x = master.width;
-        value_list.y = @intCast(
-            if (i == 0)
-                0
-            else
+        const value_list = std.mem.zeroInit(c.xcb_configure_window_value_list_t, .{
+            .x = master.width,
+            .y = @as(i32, @intCast(
                 (screen.height_in_pixels / stack.count) * i +
-                    (screen.height_in_pixels % stack.count),
-        );
-        value_list.height = @intCast(
-            screen.height_in_pixels / stack.count - border_width * 2 +
-                if (i == 0) screen.height_in_pixels % stack.count else 0,
-        );
-        value_list.width = stack.width - border_width * 2;
+                    if (i != 0) (screen.height_in_pixels % stack.count) else 0,
+            )),
+            .height = @as(u32, @intCast(
+                screen.height_in_pixels / stack.count - border_width * 2 +
+                    if (i == 0) screen.height_in_pixels % stack.count else 0,
+            )),
+            .width = stack.width - border_width * 2,
+        });
         const cookie = c.xcb_configure_window_aux(
             con,
             window,
@@ -149,8 +127,9 @@ fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t
     try clients.append(.{ .window = event.window });
     {
         const value_mask: u16 = c.XCB_CONFIG_WINDOW_BORDER_WIDTH;
-        var value_list: c.xcb_configure_window_value_list_t = undefined;
-        value_list.border_width = border_width;
+        const value_list = std.mem.zeroInit(c.xcb_configure_window_value_list_t, .{
+            .border_width = border_width,
+        });
         const cookie = c.xcb_configure_window_aux(
             con,
             event.window,
@@ -164,9 +143,10 @@ fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t
     }
     {
         const value_mask: u16 = c.XCB_CW_BORDER_PIXEL | c.XCB_CW_BORDER_PIXMAP;
-        var value_list: c.xcb_change_window_attributes_value_list_t = undefined;
-        value_list.border_pixel = dark_violet;
-        value_list.border_pixmap = c.XCB_PIXMAP_NONE;
+        const value_list = std.mem.zeroInit(c.xcb_change_window_attributes_value_list_t, .{
+            .border_pixel = dark_violet,
+            .border_pixmap = c.XCB_PIXMAP_NONE,
+        });
         const cookie = c.xcb_change_window_attributes_aux(
             con,
             event.window,
@@ -268,7 +248,7 @@ pub fn main() !void {
     clients = try @TypeOf(clients).initCapacity(allocator, 64);
     defer clients.deinit();
 
-    log.debug(
+    log.info(
         \\trying to connect to X server...
     , .{});
     var screenp: c_int = undefined;
@@ -314,14 +294,12 @@ pub fn main() !void {
 
     root_ev: {
         const value_mask = c.XCB_CW_EVENT_MASK;
-        const value_list = blk: {
-            var vl: c.xcb_change_window_attributes_value_list_t = undefined;
-            vl.event_mask = c.XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-            vl.event_mask |= c.XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
-            vl.event_mask |= c.XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
-            vl.event_mask |= c.XCB_EVENT_MASK_RESIZE_REDIRECT;
-            break :blk vl;
-        };
+        const value_list = std.mem.zeroInit(c.xcb_change_window_attributes_value_list_t, .{
+            .event_mask = c.XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+                c.XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
+                c.XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+                c.XCB_EVENT_MASK_RESIZE_REDIRECT,
+        });
 
         const wm_root_ev_req_cookie = c.xcb_change_window_attributes_aux_checked(
             con,
