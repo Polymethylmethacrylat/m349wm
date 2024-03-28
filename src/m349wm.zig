@@ -5,6 +5,7 @@ const c_allocator = std.heap.c_allocator;
 const assert = std.debug.assert;
 const print = std.debug.print;
 const free = std.c.free;
+const zInit = std.mem.zeroInit;
 
 const builtin = @import("builtin");
 
@@ -18,17 +19,55 @@ const violet = 0x9f00ff;
 const dark_violet = 0x390099;
 const border_width = 3;
 
+const allocator = c_allocator;
+
 var clients: std.ArrayList(Client) = undefined;
+var current_client: ?usize = null;
 var screen: *const c.xcb_screen_t = undefined;
+var connection: *c.xcb_connection_t = undefined;
+
+fn setCurrentClient(window: ?c.xcb_window_t) void {
+    const con = connection;
+    defer _ = c.xcb_flush(con);
+    if (current_client) |cur| {
+        const value_mask = c.XCB_CW_BORDER_PIXEL;
+        const value_list = zInit(c.xcb_change_window_attributes_value_list_t, .{
+            .border_pixel = dark_violet,
+        });
+        _ = c.xcb_change_window_attributes_aux(
+            con,
+            clients.items[cur].window,
+            value_mask,
+            &value_list,
+        );
+    }
+    current_client = if (window) |win| blk: {
+        const value_mask = c.XCB_CW_BORDER_PIXEL;
+        const value_list = zInit(c.xcb_change_window_attributes_value_list_t, .{
+            .border_pixel = violet,
+        });
+        _ = c.xcb_change_window_attributes_aux(
+            con,
+            win,
+            value_mask,
+            &value_list,
+        );
+        for (clients.items, 0..) |client, i| {
+            if (client.window == win) break :blk i;
+        } else unreachable;
+    } else null;
+}
 
 /// assumes that `clients` is ordered after windows being mapped or not
-fn arrangeClients(con: *c.xcb_connection_t) void {
+fn arrangeClients() void {
+    const con = connection;
     const mapped: usize = blk: {
         var i: usize = 0;
         while (i < clients.items.len and clients.items[i].mapped) : (i += 1) {}
         break :blk i;
     };
     if (mapped == 0) return;
+    const cur_client = if (current_client) |cur| clients.items[cur] else null;
 
     const master = .{
         .width = if (mapped > 1) (screen.width_in_pixels * 2) / 3 else screen.width_in_pixels,
@@ -48,7 +87,7 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             c.XCB_CONFIG_WINDOW_Y |
             c.XCB_CONFIG_WINDOW_WIDTH |
             c.XCB_CONFIG_WINDOW_HEIGHT;
-        const value_list = std.mem.zeroInit(c.xcb_configure_window_value_list_t, .{
+        const value_list = zInit(c.xcb_configure_window_value_list_t, .{
             .x = @as(i32, @intCast(
                 (master.width / master.count) * i + if (i != 0)
                     (master.width % master.count)
@@ -80,7 +119,7 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             c.XCB_CONFIG_WINDOW_Y |
             c.XCB_CONFIG_WINDOW_WIDTH |
             c.XCB_CONFIG_WINDOW_HEIGHT;
-        const value_list = std.mem.zeroInit(c.xcb_configure_window_value_list_t, .{
+        const value_list = zInit(c.xcb_configure_window_value_list_t, .{
             .x = master.width,
             .y = @as(i32, @intCast(
                 (screen.height_in_pixels / stack.count) * i +
@@ -102,6 +141,10 @@ fn arrangeClients(con: *c.xcb_connection_t) void {
             \\ configuring window `{}`. sequence: {x}
         , .{ window, cookie.sequence });
     }
+    if (cur_client) |cur| {
+        current_client = for (clients.items, 0..) |client, i|
+            if (std.meta.eql(client, cur)) break i;
+    }
 }
 
 fn handleError(ev: *const c.xcb_generic_event_t) void {
@@ -119,7 +162,8 @@ fn handleError(ev: *const c.xcb_generic_event_t) void {
         });
     }
 }
-fn handleCreateNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+fn handleCreateNotify(ev: *const c.xcb_generic_event_t) !void {
+    const con = connection;
     const event: *const c.xcb_create_notify_event_t = @ptrCast(ev);
     log.debug(
         \\handling create notify request. window: {}
@@ -170,11 +214,16 @@ fn handleDestroyNotify(ev: *const c.xcb_generic_event_t) void {
         \\handling destroy notify request. window: {}
     , .{event.window});
 }
-fn handleUnmapNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+fn handleUnmapNotify(ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_unmap_notify_event_t = @ptrCast(ev);
     for (clients.items, 0..) |client, i| {
         if (client.window != event.window) continue;
         var tmp: Client = clients.orderedRemove(i);
+        if (current_client) |*cur| {
+            if (cur.* > i)
+                cur.* -= 1
+            else if (cur.* == i) setCurrentClient(null);
+        }
         tmp.mapped = false;
         try clients.append(tmp);
         break;
@@ -182,11 +231,13 @@ fn handleUnmapNotify(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t)
     log.debug(
         \\handling unmap notify. window: {}
     , .{event.window});
-    arrangeClients(con);
+    arrangeClients();
 }
 fn handleMapNotify() void {}
-fn handleMapRequest(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) !void {
+fn handleMapRequest(ev: *const c.xcb_generic_event_t) !void {
+    const con = connection;
     const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
+    setCurrentClient(null);
     {
         var tmp = for (clients.items, 0..) |client, i| {
             if (client.window != event.window) continue;
@@ -204,7 +255,8 @@ fn handleMapRequest(con: *c.xcb_connection_t, ev: *const c.xcb_generic_event_t) 
         \\mapping window `{}`. sequence id: `{x}`
     , .{ event.window, map_cookie.sequence });
     assert(c.xcb_flush(con) > 0);
-    arrangeClients(con);
+    arrangeClients();
+    setCurrentClient(event.window);
 }
 fn handleReparentNotify() void {}
 fn handleConfigureNotify() void {}
@@ -216,15 +268,16 @@ fn handlePropertyNotify() void {}
 fn handleMappingNotify() void {}
 fn handleClientMessage() void {}
 
-fn eventLoop(con: *c.xcb_connection_t) !void {
+fn eventLoop() !void {
+    const con = connection;
     while (@as(?*c.xcb_generic_event_t, c.xcb_wait_for_event(con))) |event| {
         defer free(event);
         switch (c.XCB_EVENT_RESPONSE_TYPE(event)) {
             0 => handleError(event),
-            c.XCB_CREATE_NOTIFY => try handleCreateNotify(con, event),
+            c.XCB_CREATE_NOTIFY => try handleCreateNotify(event),
             c.XCB_DESTROY_NOTIFY => handleDestroyNotify(event),
-            c.XCB_UNMAP_NOTIFY => try handleUnmapNotify(con, event),
-            c.XCB_MAP_REQUEST => try handleMapRequest(con, event),
+            c.XCB_UNMAP_NOTIFY => try handleUnmapNotify(event),
+            c.XCB_MAP_REQUEST => try handleMapRequest(event),
             else => {
                 if (@as(?[*:0]const u8, c.xcb_event_get_label(event.response_type))) |label| {
                     log.warn(
@@ -244,17 +297,17 @@ fn eventLoop(con: *c.xcb_connection_t) !void {
 }
 
 pub fn main() !void {
-    const allocator = c_allocator;
-    clients = try @TypeOf(clients).initCapacity(allocator, 64);
+    clients = try @TypeOf(clients).initCapacity(allocator, 256);
     defer clients.deinit();
 
     log.info(
         \\trying to connect to X server...
     , .{});
     var screenp: c_int = undefined;
-    const con = c.xcb_connect(null, &screenp) orelse unreachable;
-    defer c.xcb_disconnect(con);
-    const con_err = c.xcb_connection_has_error(con);
+    connection = c.xcb_connect(null, &screenp) orelse unreachable;
+    defer c.xcb_disconnect(connection);
+    const con = connection;
+    const con_err = c.xcb_connection_has_error(connection);
     switch (con_err) {
         0 => {},
         c.XCB_CONN_ERROR => {
@@ -332,5 +385,5 @@ pub fn main() !void {
         }
     }
 
-    try eventLoop(con);
+    try eventLoop();
 }
