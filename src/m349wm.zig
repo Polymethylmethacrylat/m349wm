@@ -66,24 +66,24 @@ fn arrangeClients() void {
     const mapped = clients.mapped.items.len;
     if (mapped == 0) return;
 
-    const master = .{
+    const master: struct{ width: u16, count: usize } = .{
         .width = if (mapped > 1) (screen.width_in_pixels * 2) / 3 else screen.width_in_pixels,
         .count = mapped / 3 + 1,
     };
-    const stack = .{
+    const stack: @TypeOf(master) = .{
         .width = screen.width_in_pixels - master.width,
         .count = mapped - master.count,
     };
 
     defer assert(c.xcb_flush(con) > 0);
+    const value_mask =
+        c.XCB_CONFIG_WINDOW_X |
+        c.XCB_CONFIG_WINDOW_Y |
+        c.XCB_CONFIG_WINDOW_WIDTH |
+        c.XCB_CONFIG_WINDOW_HEIGHT |
+        c.XCB_CONFIG_WINDOW_STACK_MODE;
     for (clients.mapped.items[0..master.count], 0..) |client, i| {
         const window: c.xcb_window_t = client.window;
-        const value_mask =
-            c.XCB_CONFIG_WINDOW_X |
-            c.XCB_CONFIG_WINDOW_Y |
-            c.XCB_CONFIG_WINDOW_WIDTH |
-            c.XCB_CONFIG_WINDOW_HEIGHT |
-            c.XCB_CONFIG_WINDOW_STACK_MODE;
         const value_list = zInit(c.xcb_configure_window_value_list_t, .{
             .x = @as(i32, @intCast(
                 (master.width / master.count) * i + if (i != 0)
@@ -111,12 +111,6 @@ fn arrangeClients() void {
     }
     for (clients.mapped.items[master.count..][0..stack.count], 0..) |client, i| {
         const window: c.xcb_window_t = client.window;
-        const value_mask =
-            c.XCB_CONFIG_WINDOW_X |
-            c.XCB_CONFIG_WINDOW_Y |
-            c.XCB_CONFIG_WINDOW_WIDTH |
-            c.XCB_CONFIG_WINDOW_HEIGHT |
-            c.XCB_STACK_MODE_BELOW;
         const value_list = zInit(c.xcb_configure_window_value_list_t, .{
             .x = master.width,
             .y = @as(i32, @intCast(
@@ -255,6 +249,7 @@ fn handleCirculateNotify() void {}
 fn handleCirculateRequest(ev: *const c.xcb_generic_event_t) void {
     const event: *const c.xcb_circulate_window_request_t = @ptrCast(ev);
     _ = event;
+
 }
 fn handlePropertyNotify() void {}
 fn handleMappingNotify() void {}
