@@ -207,7 +207,7 @@ fn handleUnmapNotify(ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_unmap_notify_event_t = @ptrCast(ev);
     for (clients.mapped.items, 0..) |client, i| {
         if (client.window != event.window) continue;
-        var tmp: Client = clients.mapped.orderedRemove(i);
+        const tmp: Client = clients.mapped.orderedRemove(i);
         if (clients.current != null and clients.current.? == tmp.window) setCurrentClient(null);
         try clients.unmapped.append(tmp);
         break;
@@ -223,7 +223,7 @@ fn handleMapRequest(ev: *const c.xcb_generic_event_t) !void {
     const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
     setCurrentClient(null);
     {
-        var tmp = for (clients.unmapped.items, 0..) |client, i| {
+        const tmp = for (clients.unmapped.items, 0..) |client, i| {
             if (client.window != event.window) continue;
             break clients.unmapped.swapRemove(i);
         } else unreachable;
