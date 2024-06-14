@@ -10,15 +10,21 @@ const zInit = std.mem.zeroInit;
 const builtin = @import("builtin");
 
 const c = @import("c.zig");
-const Client = struct {
-    window: c.xcb_window_t,
-};
 
 const violet = 0x9f00ff;
 const dark_violet = 0x390099;
 const border_width = 3;
 
+const keymap = .{
+    // keysym, keybutmask, fn, arg
+    .{ c.XK_t, c.XCB_MOD_MASK_ANY, print, .{ "Hello, World!", .{} } },
+};
+
 const allocator = c_allocator;
+
+const Client = struct {
+    window: c.xcb_window_t,
+};
 
 var clients: struct {
     mapped: std.ArrayList(Client),
@@ -28,6 +34,7 @@ var clients: struct {
 
 var default_screen_num: c_int = undefined;
 var connection: *c.xcb_connection_t = undefined;
+var keysyms: *c.xcb_key_symbols_t = undefined;
 
 fn setCurrentClient(window: ?c.xcb_window_t) void {
     const con = connection;
@@ -66,7 +73,7 @@ fn arrangeClients() void {
     const mapped = clients.mapped.items.len;
     if (mapped == 0) return;
 
-    const master: struct{ width: u16, count: usize } = .{
+    const master: struct { width: u16, count: usize } = .{
         .width = if (mapped > 1) (screen.width_in_pixels * 2) / 3 else screen.width_in_pixels,
         .count = mapped / 3 + 1,
     };
@@ -151,6 +158,19 @@ fn handleError(ev: *const c.xcb_generic_event_t) void {
         });
     }
 }
+fn handleKeyInput(ev: *c.xcb_generic_event_t) void {
+    const event: *c.xcb_key_press_event_t = @ptrCast(ev);
+    const keysym = c.xcb_key_press_lookup_keysym(keysyms, event, 0);
+
+    inline for (keymap) |mapping| {
+        blk: {
+            if (keysym != mapping[0]) break :blk;
+            if (event.state != mapping[1] and
+                mapping[1] != c.XCB_MOD_MASK_ANY) break :blk;
+            @call(.auto, mapping[2], mapping[3]);
+        }
+    }
+}
 fn handleCreateNotify(ev: *const c.xcb_generic_event_t) !void {
     const con = connection;
     const event: *const c.xcb_create_notify_event_t = @ptrCast(ev);
@@ -217,7 +237,6 @@ fn handleUnmapNotify(ev: *const c.xcb_generic_event_t) !void {
     , .{event.window});
     arrangeClients();
 }
-fn handleMapNotify() void {}
 fn handleMapRequest(ev: *const c.xcb_generic_event_t) !void {
     const con = connection;
     const event: *const c.xcb_map_request_event_t = @ptrCast(ev);
@@ -241,19 +260,29 @@ fn handleMapRequest(ev: *const c.xcb_generic_event_t) !void {
     arrangeClients();
     setCurrentClient(event.window);
 }
-fn handleReparentNotify() void {}
-fn handleConfigureNotify() void {}
-fn handleResizeRequest() void {}
-fn handleConfigureRequest() void {}
-fn handleCirculateNotify() void {}
 fn handleCirculateRequest(ev: *const c.xcb_generic_event_t) void {
     const event: *const c.xcb_circulate_window_request_t = @ptrCast(ev);
     _ = event;
-
 }
-fn handlePropertyNotify() void {}
-fn handleMappingNotify() void {}
-fn handleClientMessage() void {}
+fn handleMappingNotify(ev: *c.xcb_generic_event_t) void {
+    const event: *c.xcb_mapping_notify_event_t = @ptrCast(ev);
+    _ = c.xcb_refresh_keyboard_mapping(keysyms, event);
+}
+
+fn registerKeyGrabs() void {
+    inline for (keymap) |mapping| {
+        _ = c.xcb_grab_key(
+            connection,
+            0,
+            c.xcb_aux_get_screen(connection, default_screen_num).*.root,
+            mapping[1],
+            c.xcb_key_symbols_get_keycode(keysyms, mapping[0]).*,
+            c.XCB_GRAB_MODE_ASYNC,
+            c.XCB_GRAB_MODE_ASYNC,
+        );
+    }
+    _ = c.xcb_flush(connection);
+}
 
 fn eventLoop() !void {
     const con = connection;
@@ -261,11 +290,13 @@ fn eventLoop() !void {
         defer free(event);
         switch (c.XCB_EVENT_RESPONSE_TYPE(event)) {
             0 => handleError(event),
+            c.XCB_KEY_PRESS, c.XCB_KEY_RELEASE => handleKeyInput(event),
             c.XCB_CREATE_NOTIFY => try handleCreateNotify(event),
             c.XCB_DESTROY_NOTIFY => handleDestroyNotify(event),
             c.XCB_UNMAP_NOTIFY => try handleUnmapNotify(event),
             c.XCB_MAP_REQUEST => try handleMapRequest(event),
             c.XCB_CIRCULATE_REQUEST => handleCirculateRequest(event),
+            c.XCB_MAPPING_NOTIFY => handleMappingNotify(event),
             else => {
                 if (@as(?[*:0]const u8, c.xcb_event_get_label(event.response_type))) |label| {
                     log.warn(
@@ -365,6 +396,13 @@ pub fn main() !void {
         clients.mapped.deinit();
         clients.unmapped.deinit();
     }
+
+    {
+        keysyms = c.xcb_key_symbols_alloc(connection) orelse unreachable;
+        errdefer c.xcb_key_symbols_free(keysyms);
+        registerKeyGrabs();
+    }
+    defer c.xcb_key_symbols_free(keysyms);
 
     try eventLoop();
 }
