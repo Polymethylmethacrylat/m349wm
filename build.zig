@@ -1,13 +1,18 @@
 const std = @import("std");
 
+const name = "m349wm";
+const source = "src/" ++ name ++ ".zig";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const exe = b.addExecutable(.{
-        .name = "m349wm",
-        .root_source_file = .{ .path = "src/m349wm.zig" },
+        .name = name,
+        .root_source_file = b.path(source),
         .target = target,
         .optimize = optimize,
+        .use_llvm = optimize != .Debug,
+        .use_lld = optimize != .Debug,
     });
 
     exe.linkLibC();
@@ -29,9 +34,11 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path(source),
         .target = target,
         .optimize = optimize,
+        .use_llvm = optimize != .Debug,
+        .use_lld = optimize != .Debug,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
