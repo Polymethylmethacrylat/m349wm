@@ -17,10 +17,13 @@ const border_width = 3;
 
 const keymap = .{
     // keysym, keybutmask, fn, arg
-    .{ c.XK_y, c.XCB_MOD_MASK_ANY, print, .{ "Hello, World!", .{} } },
+    //.{ c.XK_t, c.XCB_MOD_MASK_4, print, .{ "Hello, World!", .{} } },
+    .{ c.XK_j, c.XCB_MOD_MASK_4, Clients.focusNext, .{&clients} },
+    .{ c.XK_k, c.XCB_MOD_MASK_4, Clients.focusPrevious, .{&clients} },
+    .{ c.XK_Return, c.XCB_MOD_MASK_4, Clients.focusTop, .{&clients} },
 };
 
-var clients: struct {
+const Clients = struct {
     const Self = @This();
 
     mapped: std.ArrayList(c.xcb_window_t),
@@ -49,7 +52,7 @@ var clients: struct {
             c.XCB_CONFIG_WINDOW_HEIGHT |
             c.XCB_CONFIG_WINDOW_STACK_MODE;
 
-        for (self.mapped.items, 0..) |client, i| {
+        for (self.mapped.items[0..master.count], 0..) |client, i| {
             const window: c.xcb_window_t = client;
             const value_list = zInit(c.xcb_configure_window_value_list_t, .{
                 .x = @as(i32, @intCast(
@@ -76,7 +79,7 @@ var clients: struct {
                 \\ configuring window `{}`. sequence: {x}
             , .{ window, cookie.sequence });
         }
-        for (self.unmapped.items, 0..) |window, i| {
+        for (self.mapped.items[master.count..], 0..) |window, i| {
             const value_list = zInit(c.xcb_configure_window_value_list_t, .{
                 .x = master.width,
                 .y = @as(i32, @intCast(
@@ -133,14 +136,57 @@ var clients: struct {
             self.mapped.items,
             window,
         ) orelse unreachable;
+
         _ = clients.mapped.orderedRemove(index);
         try clients.unmapped.append(window);
+
         _ = c.xcb_unmap_window(connection, window);
         _ = c.xcb_flush(connection);
+
+        if (std.meta.eql(self.current, window)) self.focus(null);
+    }
+
+    pub fn focusTop(self: *Self) void {
+        if (self.mapped.items.len > 0)
+            self.focus(self.mapped.items[0])
+        else
+            self.focus(null);
+    }
+
+    pub fn focusNext(self: *Self) void {
+        if (self.current == null) return self.focusTop();
+
+        const index = init: {
+            var index = std.mem.indexOfScalar(
+                c.xcb_window_t,
+                self.mapped.items,
+                self.current.?,
+            ) orelse unreachable;
+            index = (index + 1) % self.mapped.items.len;
+            break :init index;
+        };
+
+        self.focus(self.mapped.items[index]);
+    }
+
+    pub fn focusPrevious(self: *Self) void {
+        if (self.current == null) return self.focusTop();
+
+        const index = init: {
+            var index = std.mem.indexOfScalar(
+                c.xcb_window_t,
+                self.mapped.items,
+                self.current.?,
+            ) orelse unreachable;
+            index -%= 1;
+            break :init @min(index, self.mapped.items.len - 1);
+        };
+
+        self.focus(self.mapped.items[index]);
     }
 
     /// assumes window is in self.mapped
-    pub fn setCurrent(self: *Self, window: ?c.xcb_window_t) void {
+    pub fn focus(self: *Self, window: ?c.xcb_window_t) void {
         defer _ = c.xcb_flush(connection);
 
         if (self.current) |cur| {
@@ -169,6 +215,13 @@ var clients: struct {
             );
             break :blk win;
         } else null;
+
+        _ = c.xcb_set_input_focus(
+            connection,
+            c.xcb_aux_get_screen(connection, default_screen_num).*.root,
+            window orelse c.xcb_aux_get_screen(connection, default_screen_num).*.root,
+            c.XCB_CURRENT_TIME,
+        );
     }
 
     pub fn init(allocator: Allocator) !Self {
@@ -183,7 +236,9 @@ var clients: struct {
         self.unmapped.deinit();
         self.current = null;
     }
-} = undefined;
+};
+
+var clients: Clients = undefined;
 
 var default_screen_num: c_int = undefined;
 var connection: *c.xcb_connection_t = undefined;
@@ -210,9 +265,9 @@ fn handleKeyInput(event: *c.xcb_key_press_event_t) void {
     inline for (keymap) |mapping| {
         blk: {
             if (keysym != mapping[0]) break :blk;
-            if (event.state != mapping[1] and
+            if (event.state & ~c.XCB_MOD_MASK_LOCK != mapping[1] and
                 mapping[1] != c.XCB_MOD_MASK_ANY) break :blk;
-            @call(.auto, mapping[2], mapping[3]);
+            _ = @call(.auto, mapping[2], mapping[3]);
         }
     }
 }
@@ -276,14 +331,14 @@ fn handleUnmapNotify(event: *const c.xcb_unmap_notify_event_t) !void {
 }
 
 fn handleMapRequest(event: *const c.xcb_map_request_event_t) !void {
-    clients.setCurrent(null);
+    clients.focus(null);
     try clients.map(event.window);
     log.debug(
         \\handling map request. window: {}, parent: {}
     , .{ event.window, event.parent });
 
     clients.arrange();
-    clients.setCurrent(event.window);
+    clients.focus(event.window);
 }
 
 fn handleMappingNotify(event: *c.xcb_mapping_notify_event_t) void {
@@ -299,6 +354,15 @@ fn registerKeyGrabs() void {
             0,
             c.xcb_aux_get_screen(connection, default_screen_num).*.root,
             mapping[1],
+            c.xcb_key_symbols_get_keycode(keysyms, mapping[0]).*,
+            c.XCB_GRAB_MODE_ASYNC,
+            c.XCB_GRAB_MODE_ASYNC,
+        );
+        _ = c.xcb_grab_key(
+            connection,
+            0,
+            c.xcb_aux_get_screen(connection, default_screen_num).*.root,
+            mapping[1] | c.XCB_MOD_MASK_LOCK,
             c.xcb_key_symbols_get_keycode(keysyms, mapping[0]).*,
             c.XCB_GRAB_MODE_ASYNC,
             c.XCB_GRAB_MODE_ASYNC,
@@ -427,7 +491,7 @@ pub fn main() !void {
 
     registerEvents();
 
-    clients = try @TypeOf(clients).init(c_allocator);
+    clients = try Clients.init(c_allocator);
     defer clients.deinit();
 
     {
