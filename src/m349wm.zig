@@ -14,6 +14,9 @@ const c = @import("c.zig");
 const violet = 0x9F_00_FF;
 const dark_violet = 0x39_00_99;
 const border_width = 3;
+const terminal = .{"st"};
+
+const shift_super = c.XCB_MOD_MASK_SHIFT | c.XCB_MOD_MASK_4;
 
 const keymap = .{
     // keysym, keybutmask, fn, arg
@@ -21,7 +24,13 @@ const keymap = .{
     .{ c.XK_j, c.XCB_MOD_MASK_4, Clients.focusNext, .{&clients} },
     .{ c.XK_k, c.XCB_MOD_MASK_4, Clients.focusPrevious, .{&clients} },
     .{ c.XK_Return, c.XCB_MOD_MASK_4, Clients.focusTop, .{&clients} },
+    .{ c.XK_k, shift_super, spawn, .{&terminal} },
 };
+
+fn spawn(args: []const []const u8) void {
+    var proc = std.process.Child.init(args, c_allocator);
+    proc.spawn() catch {};
+}
 
 const Clients = struct {
     const Self = @This();
@@ -218,7 +227,7 @@ const Clients = struct {
 
         _ = c.xcb_set_input_focus(
             connection,
-            c.xcb_aux_get_screen(connection, default_screen_num).*.root,
+            c.XCB_INPUT_FOCUS_PARENT,
             window orelse c.xcb_aux_get_screen(connection, default_screen_num).*.root,
             c.XCB_CURRENT_TIME,
         );
