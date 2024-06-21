@@ -24,7 +24,7 @@ const keymap = .{
     .{ c.XK_j, c.XCB_MOD_MASK_4, Clients.focusNext, .{&clients} },
     .{ c.XK_k, c.XCB_MOD_MASK_4, Clients.focusPrevious, .{&clients} },
     .{ c.XK_Return, c.XCB_MOD_MASK_4, Clients.focusTop, .{&clients} },
-    .{ c.XK_k, shift_super, spawn, .{&terminal} },
+    .{ c.XK_Return, shift_super, spawn, .{&terminal} },
 };
 
 fn spawn(args: []const []const u8) void {
@@ -61,56 +61,68 @@ const Clients = struct {
             c.XCB_CONFIG_WINDOW_HEIGHT |
             c.XCB_CONFIG_WINDOW_STACK_MODE;
 
-        for (self.mapped.items[0..master.count], 0..) |client, i| {
-            const window: c.xcb_window_t = client;
-            const value_list = zInit(c.xcb_configure_window_value_list_t, .{
-                .x = @as(i32, @intCast(
-                    (master.width / master.count) * i + if (i != 0)
-                        (master.width % master.count)
-                    else
-                        0,
-                )),
-                .y = 0,
-                .width = @as(u32, @intCast(
-                    master.width / master.count - border_width * 2 +
-                        if (i == 0) master.width % master.count else 0,
-                )),
-                .height = screen.height_in_pixels - border_width * 2,
-                .stack_mode = c.XCB_STACK_MODE_BELOW,
-            });
-            const cookie = c.xcb_configure_window_aux(
-                connection,
-                window,
-                value_mask,
-                &value_list,
-            );
-            log.debug(
-                \\ configuring window `{}`. sequence: {x}
-            , .{ window, cookie.sequence });
+        if (master.count > 0) {
+            const width = master.width / master.count;
+
+            for (self.mapped.items[0..master.count], 0..) |client, i| {
+                const window: c.xcb_window_t = client;
+                const pos_adj, const width_adj = if (i != 0)
+                    .{ master.width % master.count, 0 }
+                else
+                    .{ 0, master.width % master.count };
+
+                const value_list = zInit(c.xcb_configure_window_value_list_t, .{
+                    .x = @as(i32, @intCast(width * i + pos_adj)),
+                    .y = 0,
+                    .width = @as(u32, @intCast(width - border_width * 2 + width_adj)),
+                    .height = screen.height_in_pixels - border_width * 2,
+                    .stack_mode = c.XCB_STACK_MODE_BELOW,
+                });
+
+                const cookie = c.xcb_configure_window_aux(
+                    connection,
+                    window,
+                    value_mask,
+                    &value_list,
+                );
+
+                log.debug(
+                    \\ configuring window `{}`. sequence: {x}
+                , .{ window, cookie.sequence });
+            }
         }
-        for (self.mapped.items[master.count..], 0..) |window, i| {
-            const value_list = zInit(c.xcb_configure_window_value_list_t, .{
-                .x = master.width,
-                .y = @as(i32, @intCast(
-                    (screen.height_in_pixels / stack.count) * i +
-                        if (i != 0) (screen.height_in_pixels % stack.count) else 0,
-                )),
-                .height = @as(u32, @intCast(
-                    screen.height_in_pixels / stack.count - border_width * 2 +
-                        if (i == 0) screen.height_in_pixels % stack.count else 0,
-                )),
-                .width = stack.width - border_width * 2,
-                .stack_mode = c.XCB_STACK_MODE_BELOW,
-            });
-            const cookie = c.xcb_configure_window_aux(
-                connection,
-                window,
-                value_mask,
-                &value_list,
-            );
-            log.debug(
-                \\ configuring window `{}`. sequence: {x}
-            , .{ window, cookie.sequence });
+        if (stack.count > 0) {
+            const height = screen.height_in_pixels / stack.count;
+
+            for (self.mapped.items[master.count..], 0..) |window, i| {
+                const pos_adj, const height_adj = if (i != 0)
+                    .{ screen.height_in_pixels % stack.count, 0 }
+                else
+                    .{ 0, screen.height_in_pixels % stack.count };
+
+                const value_list = zInit(c.xcb_configure_window_value_list_t, .{
+                    .x = master.width,
+                    .y = @as(i32, @intCast(
+                        height * i + pos_adj,
+                    )),
+                    .height = @as(u32, @intCast(
+                        height - border_width * 2 + height_adj,
+                    )),
+                    .width = stack.width - border_width * 2,
+                    .stack_mode = c.XCB_STACK_MODE_BELOW,
+                });
+
+                const cookie = c.xcb_configure_window_aux(
+                    connection,
+                    window,
+                    value_mask,
+                    &value_list,
+                );
+
+                log.debug(
+                    \\ configuring window `{}`. sequence: {x}
+                , .{ window, cookie.sequence });
+            }
         }
     }
 
